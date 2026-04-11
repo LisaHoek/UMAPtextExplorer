@@ -11,7 +11,6 @@ GOAL_ORDER = [
     "LAT relationship",
     "Sex",
     "Other",
-    "Not mentioned",
 ]
 
 def marriage_or_not(x):

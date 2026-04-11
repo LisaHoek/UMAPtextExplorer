@@ -95,7 +95,7 @@ if uploaded_file is not None:
     )
 
     color_options = ["None"] + all_columns
-    if TERM_SOURCE_COL or TERM_SOURCE_COL_ALT in all_columns:
+    if TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns:
         color_options.append(TERM_BLEND_OPTION)
     color_col = st.sidebar.selectbox(
         "Color column",
@@ -103,7 +103,7 @@ if uploaded_file is not None:
         index=0
     )
 
-    point_size = st.sidebar.slider("Point size", 1, 30, 8)
+    point_size = st.sidebar.slider("Point size", 1, 30, 4)
     marker_opacity = st.sidebar.slider("Opacity", 0.1, 1.0, 0.7)
     max_texts = st.sidebar.number_input(
         "Maximum number of selected texts to display",
@@ -218,6 +218,41 @@ if uploaded_file is not None:
 
     elif color_col != "None":
         plot_color_col = color_col
+
+    # Optional: hide "Not mentioned" for the active color grouping
+    hide_not_mentioned = False
+
+    if plot_color_col is not None:
+        has_not_mentioned = df[plot_color_col].astype(str).eq("Not mentioned").any()
+
+        if has_not_mentioned:
+            hide_not_mentioned = st.sidebar.checkbox(
+                'Hide "Not mentioned"',
+                value=False
+            )
+
+    if hide_not_mentioned:
+        df = df[df[plot_color_col].astype(str) != "Not mentioned"].reset_index(drop=True)
+
+        if df.empty:
+            st.warning('No rows remain after hiding "Not mentioned".')
+            st.stop()
+
+        # Remove from legend/color definitions too
+        if color_discrete_map is not None and "Not mentioned" in color_discrete_map:
+            color_discrete_map = {
+                k: v for k, v in color_discrete_map.items()
+                if k != "Not mentioned"
+            }
+
+        if category_orders is not None and plot_color_col in category_orders:
+            category_orders = {
+                **category_orders,
+                plot_color_col: [
+                    cat for cat in category_orders[plot_color_col]
+                    if cat != "Not mentioned"
+                ]
+            }
 
     if use_term_blend:
         st.sidebar.markdown("**Term blend key**")
@@ -503,6 +538,7 @@ if uploaded_file is not None:
 
     # Read selected points
     selected_indices = []
+    selected_df = pd.DataFrame()
 
     if not animate_time:
         try:
@@ -546,8 +582,14 @@ if uploaded_file is not None:
             st.info("Select points using lasso or box selection.")
 
     st.divider()
-    st.subheader("Data Preview")
-    st.dataframe(df.head(20), use_container_width=True)
+    st.subheader("Data Preview (selected)")
+    if not selected_df.empty:
+        st.dataframe(selected_df, use_container_width=True)
+    else:
+        st.info("No points selected.")
+
+    st.subheader("Data Preview (plot)")
+    st.dataframe(df, use_container_width=True)
 
 else:
     st.info("Please upload a CSV file first.")

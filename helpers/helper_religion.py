@@ -23,9 +23,9 @@ def religion_or_not(x):
     if x in RELIGIOUS_VALUES:
         return "Religious"
     elif x in NO_PREF_VALUES:
-        return "No preference"
+        return "Not mentioned / No preference"
     else:
-        return "Religious"
+        return "Not mentioned / No preference"
     
 def get_religion_color_map():
     kleuren = sns.color_palette("Set2", 4)
