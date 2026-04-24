@@ -58,31 +58,63 @@ uploaded_file = st.file_uploader("Upload your CSV", type="csv")
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
 
-    # Required columns
+    # Required base columns
     required_cols = {"x", "y"}
     missing = required_cols - set(df.columns)
     if missing:
         st.error(f"Missing required columns: {', '.join(missing)}")
         st.stop()
 
-    # Clean x/y
     df = df.copy()
-    df["x"] = pd.to_numeric(df["x"], errors="coerce")
-    df["y"] = pd.to_numeric(df["y"], errors="coerce")
+
+    # Convert all possible coordinate columns to numeric
+    coordinate_candidates = ["x", "y", "x_profile_reduced", "y_profile_reduced"]
+    for col in coordinate_candidates:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if YEAR_COL in df.columns:
         df[YEAR_COL] = pd.to_numeric(df[YEAR_COL], errors="coerce")
-    df = df.dropna(subset=["x", "y"]).reset_index(drop=True)
+
+    # Sidebar
+    st.sidebar.header("Settings")
+
+    # Toggle coordinate space if reduced profile coordinates are available
+    has_profile_reduced = {
+        "x_profile_reduced",
+        "y_profile_reduced"
+    }.issubset(df.columns)
+
+    use_profile_reduced = False
+    if has_profile_reduced:
+        use_profile_reduced = st.sidebar.toggle(
+            "Use reduced profile coordinates",
+            value=False,
+            help="Switch between plotting x/y and x_profile_reduced/y_profile_reduced."
+        )
+
+    if use_profile_reduced:
+        x_col = "x_profile_reduced"
+        y_col = "y_profile_reduced"
+    else:
+        x_col = "x"
+        y_col = "y"
+
+    # Keep only rows with valid coordinates in the active coordinate space
+    df = df.dropna(subset=[x_col, y_col]).reset_index(drop=True)
 
     if df.empty:
-        st.warning("No valid rows remain after cleaning x and y.")
+        st.warning(f"No valid rows remain after cleaning {x_col} and {y_col}.")
         st.stop()
 
     all_columns = df.columns.tolist()
-    non_xy_columns = [col for col in all_columns if col not in ["x", "y"]]
+
+    # Exclude coordinate columns from text-column options
+    coordinate_columns = {"x", "y", "x_profile_reduced", "y_profile_reduced"}
+    non_xy_columns = [col for col in all_columns if col not in coordinate_columns]
 
     if not non_xy_columns:
-        st.error("Your CSV only contains x and y. Please add at least one extra column for text.")
+        st.error("Your CSV only contains coordinate columns. Please add at least one extra column for text.")
         st.stop()
 
     # Sidebar
@@ -332,8 +364,8 @@ if uploaded_file is not None:
         ]
 
     base_plot_kwargs = dict(
-        x="x",
-        y="y",
+        x=x_col,
+        y=y_col,
         custom_data=custom_data_cols,
     )
 
@@ -342,10 +374,10 @@ if uploaded_file is not None:
         base_plot_kwargs["render_mode"] = "webgl"
 
     # Fixed axis range
-    x_pad = max((df["x"].max() - df["x"].min()) * 0.05, 1e-6)
-    y_pad = max((df["y"].max() - df["y"].min()) * 0.05, 1e-6)
-    x_range = [df["x"].min() - x_pad, df["x"].max() + x_pad]
-    y_range = [df["y"].min() - y_pad, df["y"].max() + y_pad]
+    x_pad = max((df[x_col].max() - df[x_col].min()) * 0.05, 1e-6)
+    y_pad = max((df[y_col].max() - df[y_col].min()) * 0.05, 1e-6)
+    x_range = [df[x_col].min() - x_pad, df[x_col].max() + x_pad]
+    y_range = [df[y_col].min() - y_pad, df[y_col].max() + y_pad]
 
     if use_term_blend:
         hover_template = (
@@ -353,14 +385,14 @@ if uploaded_file is not None:
             "Modern terms: %{customdata[2]}<br>"
             "Hobby terms: %{customdata[3]}<br>"
             "Traditional terms: %{customdata[4]}<br>"
-            "x=%{x}<br>"
-            "y=%{y}<extra></extra>"
+            f"{x_col}=%{{x}}<br>"
+            f"{y_col}=%{{y}}<extra></extra>"
         )
     else:
         hover_template = (
             "<b>%{customdata[1]}</b><br>"
-            "x=%{x}<br>"
-            "y=%{y}<extra></extra>"
+            f"{x_col}=%{{x}}<br>"
+            f"{y_col}=%{{y}}<extra></extra>"
         )
 
     if animate_time and use_term_blend:
@@ -434,8 +466,8 @@ if uploaded_file is not None:
             height=700,
             dragmode="pan",
             margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title="x",
-            yaxis_title="y",
+            xaxis_title=x_col,
+            yaxis_title=y_col,
             legend_title_text=plot_color_col if plot_color_col is not None else ""
         )
 
@@ -512,7 +544,7 @@ if uploaded_file is not None:
             event = st.plotly_chart(
                 fig,
                 use_container_width=True,
-                key="scatter_plot_variant_animated",
+                key=f"scatter_plot_variant_animated_{x_col}_{y_col}",
                 config={
                     "scrollZoom": True,
                     "displaylogo": False
@@ -522,7 +554,7 @@ if uploaded_file is not None:
             event = st.plotly_chart(
                 fig,
                 use_container_width=True,
-                key="scatter_plot_variant",
+                key=f"scatter_plot_variant_{x_col}_{y_col}",
                 on_select="rerun",
                 selection_mode=("box", "lasso"),
                 config={
