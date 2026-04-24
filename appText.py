@@ -105,12 +105,7 @@ if uploaded_file is not None:
 
     point_size = st.sidebar.slider("Point size", 1, 30, 4)
     marker_opacity = st.sidebar.slider("Opacity", 0.1, 1.0, 0.7)
-    max_texts = st.sidebar.number_input(
-        "Maximum number of selected texts to display",
-        min_value=10,
-        max_value=10000,
-        value=500
-    )
+
     # Year sidebar settings and filtering
     if YEAR_COL in df.columns:
         year_values = df[YEAR_COL].dropna()
@@ -537,54 +532,55 @@ if uploaded_file is not None:
             )
 
     # Read selected points
-    selected_indices = []
+    selected_row_ids = []
     selected_df = pd.DataFrame()
+    display_selected_df = pd.DataFrame()
 
     if not animate_time:
+        points = []
+
         try:
             if event and event.selection and event.selection.points:
-                selected_indices = [p["point_index"] for p in event.selection.points]
+                points = event.selection.points
         except Exception:
             try:
-                selected_indices = [p["point_index"] for p in event["selection"]["points"]]
+                points = event.get("selection", {}).get("points", [])
             except Exception:
-                selected_indices = []
+                points = []
+
+        if points:
+            # Use the dataframe row id stored in customdata[0],
+            # not point_index (which is trace-local when color creates multiple traces)
+            selected_row_ids = [p["customdata"][0] for p in points]
 
     with right:
         st.subheader("Selection")
 
         if animate_time:
             st.info("Selection is disabled in animation mode. Turn off animation to lasso points and inspect text.")
-        elif selected_indices:
-            selected_df = df.iloc[selected_indices]
+        elif selected_row_ids:
+            selected_df = (
+                df.set_index("_row_id")
+                .loc[selected_row_ids]
+                .reset_index()
+            )
+            display_selected_df = selected_df.drop(columns=["_row_id", "hover_text_wrapped"], errors="ignore")
 
             st.success(f"{len(selected_df)} point(s) selected")
 
-            shown_df = selected_df.head(max_texts)
-
             st.text_area(
                 "Selected text",
-                value="\n\n".join(shown_df[text_col].astype(str).tolist()),
+                value="\n\n".join(selected_df[text_col].astype(str).tolist()),
                 height=500
             )
 
-            with st.expander("Show selected rows"):
-                st.dataframe(selected_df, use_container_width=True)
-
-            csv_selected = selected_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Download selection as CSV",
-                data=csv_selected,
-                file_name="selection.csv",
-                mime="text/csv"
-            )
         else:
             st.info("Select points using lasso or box selection.")
 
     st.divider()
     st.subheader("Data Preview (selected)")
-    if not selected_df.empty:
-        st.dataframe(selected_df, use_container_width=True)
+    if not display_selected_df.empty:
+        st.dataframe(display_selected_df, use_container_width=True)
     else:
         st.info("No points selected.")
 
