@@ -1,6 +1,9 @@
-import streamlit as st
+import re
+
 import pandas as pd
 import plotly.express as px
+import streamlit as st
+
 from helpers.helper_utils import YEAR_COL
 from helpers.helper_hover import wrap_hover_text
 
@@ -45,60 +48,171 @@ from helpers.helper_animation import (
     build_term_blend_animation_figure,
 )
 
+
+def get_coordinate_pairs(df):
+    """
+    Detect valid coordinate pairs in the dataframe.
+
+    A valid pair is:
+    - x / y
+    - x_* / y_*
+    where the suffix after x matches the suffix after y.
+    """
+    x_candidates = [col for col in df.columns if re.match(r"^x($|_)", str(col))]
+    pairs = []
+
+    for x_col in x_candidates:
+        y_col = "y" + x_col[1:]
+        if y_col in df.columns:
+            pairs.append((x_col, y_col))
+
+    preferred_order = {
+        ("x", "y"): 0,
+        ("x_profile_reduced", "y_profile_reduced"): 1,
+        ("x_ss", "y_ss"): 2,
+        ("x_ss_profile_reduced", "y_ss_profile_reduced"): 3,
+        ("x_ds", "y_ds"): 4,
+        ("x_ds_profile_reduced", "y_ds_profile_reduced"): 5,
+    }
+
+    return sorted(
+        pairs,
+        key=lambda pair: (preferred_order.get(pair, 999), pair[0], pair[1])
+    )
+
+
+def format_coordinate_pair_label(x_col, y_col):
+    """
+    Create a semantic label for a coordinate pair dropdown.
+
+    Examples
+    --------
+    x / y -> OCR extended
+    x_profile_reduced / y_profile_reduced -> OCR profile reduced
+    x_ss / y_ss -> SS extended
+    x_ss_profile_reduced / y_ss_profile_reduced -> SS profile reduced
+    x_ds / y_ds -> DS extended
+    x_ds_profile_reduced / y_ds_profile_reduced -> DS profile reduced
+    """
+    if x_col == "x" and y_col == "y":
+        return "OCR extended"
+
+    if x_col == "x_profile_reduced" and y_col == "y_profile_reduced":
+        return "OCR profile reduced"
+
+    if x_col == "x_ss" and y_col == "y_ss":
+        return "SS extended"
+
+    if x_col == "x_ss_profile_reduced" and y_col == "y_ss_profile_reduced":
+        return "SS profile reduced"
+
+    if x_col == "x_ds" and y_col == "y_ds":
+        return "DS extended"
+
+    if x_col == "x_ds_profile_reduced" and y_col == "y_ds_profile_reduced":
+        return "DS profile reduced"
+
+    # Fallback for any future coordinate families
+    if x_col.startswith("x_"):
+        suffix = x_col[2:]
+    else:
+        suffix = ""
+
+    is_profile_reduced = suffix.endswith("_profile_reduced")
+    if is_profile_reduced:
+        base = suffix[:-len("_profile_reduced")]
+    else:
+        base = suffix
+
+    if base in {"", "ocr"}:
+        source_label = "OCR"
+    elif base == "ss":
+        source_label = "SS"
+    elif base == "ds":
+        source_label = "DS"
+    else:
+        source_label = base.replace("_", " ").title()
+
+    representation_label = "profile reduced" if is_profile_reduced else "extended"
+    return f"{source_label} {representation_label}"
+
+
 # Set up Streamlit app
 st.set_page_config(page_title="CSV Scatter Explorer", layout="wide")
 st.title("CSV Scatter Explorer")
 st.write(
-    "Upload a CSV file with at least columns `x` and `y`. "
-    "Then choose which column should be used as text and which one for color."
+    "Upload a CSV file with coordinate pairs such as `x/y`, "
+    "`x_profile_reduced/y_profile_reduced`, `x_ss/y_ss`, or `x_ds/y_ds`. "
+    "Then choose which coordinate pair to analyze, which text column to inspect, "
+    "and which column to use for color."
 )
 
 uploaded_file = st.file_uploader("Upload your CSV", type="csv")
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-
-    # Required base columns
-    required_cols = {"x", "y"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        st.error(f"Missing required columns: {', '.join(missing)}")
-        st.stop()
-
     df = df.copy()
 
-    # Convert all possible coordinate columns to numeric
-    coordinate_candidates = ["x", "y", "x_profile_reduced", "y_profile_reduced"]
-    for col in coordinate_candidates:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    coordinate_pairs = get_coordinate_pairs(df)
+
+    if not coordinate_pairs:
+        st.error(
+            "No valid coordinate pairs found. Expected matching columns like "
+            "`x` and `y`, or `x_*` and `y_*`."
+        )
+        st.stop()
+
+    coordinate_columns = sorted({col for pair in coordinate_pairs for col in pair})
+
+    # Convert all detected coordinate columns to numeric
+    for col in coordinate_columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if YEAR_COL in df.columns:
         df[YEAR_COL] = pd.to_numeric(df[YEAR_COL], errors="coerce")
 
+    all_columns = df.columns.tolist()
+
+    # Exclude coordinate columns from text-column options
+    non_xy_columns = [col for col in all_columns if col not in coordinate_columns]
+
+    if not non_xy_columns:
+        st.error(
+            "Your CSV only contains coordinate columns. "
+            "Please add at least one extra column for text."
+        )
+        st.stop()
+
     # Sidebar
     st.sidebar.header("Settings")
 
-    # Toggle coordinate space if reduced profile coordinates are available
-    has_profile_reduced = {
-        "x_profile_reduced",
-        "y_profile_reduced"
-    }.issubset(df.columns)
+    # Build semantic labels and ensure uniqueness if needed
+    pair_options = []
+    pair_lookup = {}
 
-    use_profile_reduced = False
-    if has_profile_reduced:
-        use_profile_reduced = st.sidebar.toggle(
-            "Use reduced profile coordinates",
-            value=False,
-            help="Switch between plotting x/y and x_profile_reduced/y_profile_reduced."
-        )
+    for x_pair, y_pair in coordinate_pairs:
+        label = format_coordinate_pair_label(x_pair, y_pair)
 
-    if use_profile_reduced:
-        x_col = "x_profile_reduced"
-        y_col = "y_profile_reduced"
-    else:
-        x_col = "x"
-        y_col = "y"
+        # If a label ever collides, fall back to including raw column names
+        if label in pair_lookup:
+            label = f"{label} ({x_pair} / {y_pair})"
+
+        pair_options.append(label)
+        pair_lookup[label] = (x_pair, y_pair)
+
+    default_pair_index = 0
+    for i, label in enumerate(pair_options):
+        if pair_lookup[label] == ("x", "y"):
+            default_pair_index = i
+            break
+
+    selected_pair_label = st.sidebar.selectbox(
+        "Coordinate pair",
+        options=pair_options,
+        index=default_pair_index,
+    )
+
+    x_col, y_col = pair_lookup[selected_pair_label]
 
     # Keep only rows with valid coordinates in the active coordinate space
     df = df.dropna(subset=[x_col, y_col]).reset_index(drop=True)
@@ -106,19 +220,6 @@ if uploaded_file is not None:
     if df.empty:
         st.warning(f"No valid rows remain after cleaning {x_col} and {y_col}.")
         st.stop()
-
-    all_columns = df.columns.tolist()
-
-    # Exclude coordinate columns from text-column options
-    coordinate_columns = {"x", "y", "x_profile_reduced", "y_profile_reduced"}
-    non_xy_columns = [col for col in all_columns if col not in coordinate_columns]
-
-    if not non_xy_columns:
-        st.error("Your CSV only contains coordinate columns. Please add at least one extra column for text.")
-        st.stop()
-
-    # Sidebar
-    st.sidebar.header("Settings")
 
     text_col = st.sidebar.selectbox(
         "Text column",
@@ -129,6 +230,7 @@ if uploaded_file is not None:
     color_options = ["None"] + all_columns
     if TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns:
         color_options.append(TERM_BLEND_OPTION)
+
     color_col = st.sidebar.selectbox(
         "Color column",
         options=color_options,
@@ -185,7 +287,7 @@ if uploaded_file is not None:
             st.sidebar.info("Column 'Year' exists, but contains no valid numeric values.")
     else:
         animate_time = False
-    
+
     # Ensure text column is string
     df[text_col] = df[text_col].astype(str)
 
@@ -238,7 +340,6 @@ if uploaded_file is not None:
             df = prepare_term_blend(df, TERM_SOURCE_COL)
         use_term_blend = True
 
-        # No categorical legend in this mode
         plot_color_col = None
         color_discrete_map = None
         category_orders = None
@@ -265,7 +366,6 @@ if uploaded_file is not None:
             st.warning('No rows remain after hiding "Not mentioned".')
             st.stop()
 
-        # Remove from legend/color definitions too
         if color_discrete_map is not None and "Not mentioned" in color_discrete_map:
             color_discrete_map = {
                 k: v for k, v in color_discrete_map.items()
@@ -338,7 +438,6 @@ if uploaded_file is not None:
                     st.warning("No rows remain after applying the minimum group size filter.")
                     st.stop()
 
-                # Also trim category order so removed groups do not linger conceptually
                 if category_orders is not None and plot_color_col in category_orders:
                     kept_set = set(keep_groups)
                     category_orders = {
@@ -352,7 +451,9 @@ if uploaded_file is not None:
     # Build plot
     df = df.copy()
     df["_row_id"] = range(len(df))
-    df["hover_text_wrapped"] = df[text_col].apply(lambda x: wrap_hover_text(x, width=50, max_lines=10))
+    df["hover_text_wrapped"] = df[text_col].apply(
+        lambda x: wrap_hover_text(x, width=50, max_lines=10)
+    )
 
     custom_data_cols = ["_row_id", "hover_text_wrapped"]
 
@@ -369,11 +470,9 @@ if uploaded_file is not None:
         custom_data=custom_data_cols,
     )
 
-    # Use WebGL only in static non-term-blend mode
     if not animate_time and not use_term_blend:
         base_plot_kwargs["render_mode"] = "webgl"
 
-    # Fixed axis range
     x_pad = max((df[x_col].max() - df[x_col].min()) * 0.05, 1e-6)
     y_pad = max((df[y_col].max() - df[y_col].min()) * 0.05, 1e-6)
     x_range = [df[x_col].min() - x_pad, df[x_col].max() + x_pad]
@@ -411,6 +510,11 @@ if uploaded_file is not None:
             x_range=x_range,
             y_range=y_range,
             frame_duration=frame_duration
+        )
+
+        fig.update_layout(
+            xaxis_title=x_col,
+            yaxis_title=y_col,
         )
 
     elif animate_time:
@@ -525,8 +629,8 @@ if uploaded_file is not None:
             dragmode="lasso",
             uirevision="keep_zoom",
             margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title="x",
-            yaxis_title="y",
+            xaxis_title=x_col,
+            yaxis_title=y_col,
             legend_title_text=plot_color_col if plot_color_col is not None else "",
             showlegend=not use_term_blend
         )
@@ -538,6 +642,7 @@ if uploaded_file is not None:
 
     with left:
         st.subheader("Scatter Plot")
+        st.caption(f"Currently plotting: {selected_pair_label}")
 
         if animate_time:
             st.caption("Use the Play button below the chart to animate the moving year window.")
@@ -581,8 +686,6 @@ if uploaded_file is not None:
                 points = []
 
         if points:
-            # Use the dataframe row id stored in customdata[0],
-            # not point_index (which is trace-local when color creates multiple traces)
             selected_row_ids = [p["customdata"][0] for p in points]
 
     with right:
@@ -596,7 +699,10 @@ if uploaded_file is not None:
                 .loc[selected_row_ids]
                 .reset_index()
             )
-            display_selected_df = selected_df.drop(columns=["_row_id", "hover_text_wrapped"], errors="ignore")
+            display_selected_df = selected_df.drop(
+                columns=["_row_id", "hover_text_wrapped"],
+                errors="ignore"
+            )
 
             st.success(f"{len(selected_df)} point(s) selected")
 
