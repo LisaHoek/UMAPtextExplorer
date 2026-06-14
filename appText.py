@@ -49,6 +49,10 @@ from helpers.helper_animation import (
 )
 
 
+REGEX_MATCH_OPTION = "Regex match"
+REGEX_MATCH_COL = "_regex_match"
+
+
 def get_coordinate_pairs(df):
     """
     Detect valid coordinate pairs in the dataframe.
@@ -137,9 +141,56 @@ def format_coordinate_pair_label(x_col, y_col):
     return f"{source_label} {representation_label}"
 
 
+def parse_regex_patterns(raw_text):
+    """
+    Parse one or more regex patterns from a comma- or newline-separated string.
+    Empty items are removed.
+    """
+    if not raw_text:
+        return []
+
+    parts = re.split(r"[,\n]+", raw_text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def prepare_regex_match(df, text_col, patterns):
+    """
+    Create a binary color column based on whether the selected text column
+    matches at least one of the given regex patterns.
+    """
+    text_series = df[text_col].fillna("").astype(str)
+
+    match_mask = pd.Series(False, index=df.index)
+
+    for pattern in patterns:
+        try:
+            match_mask |= text_series.str.contains(
+                pattern,
+                case=False,
+                na=False,
+                regex=True,
+            )
+        except re.error as e:
+            raise ValueError(f"Invalid regex pattern `{pattern}`: {e}") from e
+
+    df[REGEX_MATCH_COL] = "No match"
+    df.loc[match_mask, REGEX_MATCH_COL] = "Regex match"
+
+    color_discrete_map = {
+        "Regex match": "#d62728",
+        "No match": "#bdbdbd",
+    }
+
+    category_orders = {
+        REGEX_MATCH_COL: ["Regex match", "No match"]
+    }
+
+    return df, REGEX_MATCH_COL, color_discrete_map, category_orders
+
+
 # Set up Streamlit app
-st.set_page_config(page_title="CSV Scatter Explorer", layout="wide")
-st.title("CSV Scatter Explorer")
+st.set_page_config(page_title="UMAP Text Explorer", layout="wide")
+st.title("UMAP Text Explorer")
 st.write(
     "Upload a CSV file with coordinate pairs such as `x/y`, "
     "`x_profile_reduced/y_profile_reduced`, `x_ss/y_ss`, or `x_ds/y_ds`. "
@@ -227,15 +278,57 @@ if uploaded_file is not None:
         index=0
     )
 
-    color_options = ["None"] + all_columns
-    if TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns:
-        color_options.append(TERM_BLEND_OPTION)
-
-    color_col = st.sidebar.selectbox(
-        "Color column",
-        options=color_options,
-        index=0
+    use_regex_color = st.sidebar.checkbox(
+        "Color by regex match in selected text",
+        value=False,
+        help=(
+            "If enabled, points are colored based on whether the selected text "
+            "column matches at least one of the entered regex patterns."
+        )
     )
+
+    regex_input = ""
+    if use_regex_color:
+        st.sidebar.markdown("### Regex patterns")
+        st.sidebar.markdown(
+            """
+            Enter one or more regex patterns, separated by commas or newlines.
+
+            **Examples**
+            - `jood.*` → matches `jood`, `joods`, `joodse`, ...
+            - `\\bprotestant\\w*\\b` → matches whole words starting with `protestant`
+            - `man+` → matches `man`, `mann`, `mannn`, ...
+
+            **Regex tips**
+            - `*` = zero or more of the previous token
+            - `+` = one or more of the previous token
+            - `?` = optional
+            - `|` = OR
+            - `\\b` = word boundary
+
+            If you want to match a literal `*` or `+`, escape it as `\\*` or `\\+`.
+            """
+        )
+
+        regex_input = st.sidebar.text_area(
+            "Regex patterns (comma or newline separated)",
+            value="",
+            help=(
+                "Enter one or more regex patterns. A row is marked as a match if "
+                "any pattern matches the selected text."
+            )
+        )
+        color_col = REGEX_MATCH_OPTION
+    else:
+        color_options = ["None"] + non_xy_columns
+        if TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns:
+            color_options.append(TERM_BLEND_OPTION)
+
+        color_col = st.sidebar.selectbox(
+            "Color column",
+            options=color_options,
+            index=0
+        )
 
     point_size = st.sidebar.slider("Point size", 1, 30, 4)
     marker_opacity = st.sidebar.slider("Opacity", 0.1, 1.0, 0.7)
@@ -343,6 +436,21 @@ if uploaded_file is not None:
         plot_color_col = None
         color_discrete_map = None
         category_orders = None
+
+    elif color_col == REGEX_MATCH_OPTION:
+        patterns = parse_regex_patterns(regex_input)
+
+        if not patterns:
+            st.sidebar.error("Please enter at least one regex pattern.")
+            st.stop()
+
+        try:
+            df, plot_color_col, color_discrete_map, category_orders = prepare_regex_match(
+                df, text_col, patterns
+            )
+        except ValueError as e:
+            st.sidebar.error(str(e))
+            st.stop()
 
     elif color_col != "None":
         plot_color_col = color_col
