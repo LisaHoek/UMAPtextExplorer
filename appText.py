@@ -49,8 +49,8 @@ from helpers.helper_animation import (
 )
 
 
-REGEX_MATCH_OPTION = "Regex match"
-REGEX_MATCH_COL = "_regex_match"
+TERM_MATCH_OPTION = "Term match"
+TERM_MATCH_COL = "_term_match"
 
 
 def get_coordinate_pairs(df):
@@ -141,55 +141,119 @@ def format_coordinate_pair_label(x_col, y_col):
     return f"{source_label} {representation_label}"
 
 
-def parse_regex_patterns(raw_text):
+def parse_search_terms(raw_text):
     """
-    Parse one or more regex patterns from a comma- or newline-separated string.
-    Empty items are removed.
+    Parse one or more literal search terms.
+
+    Supports:
+    - one term per line
+    - comma-separated terms
+    - semicolon-separated terms
+    - pipe-separated terms
+
+    Regex is not used as user input.
     """
     if not raw_text:
         return []
 
-    parts = re.split(r"[,\n]+", raw_text)
-    return [part.strip() for part in parts if part.strip()]
+    parts = re.split(r"[\n,;|]+", str(raw_text))
+    terms = []
+
+    for part in parts:
+        term = re.sub(r"\s+", " ", part).strip()
+        if term:
+            terms.append(term)
+
+    return terms
 
 
-def prepare_regex_match(df, text_col, patterns):
+def tokenize_text(value):
     """
-    Create a binary color column based on whether the selected text column
-    matches at least one of the given regex patterns.
+    Tokenize text into lowercase word tokens.
+
+    Used for 'Term is exact token':
+    the query must match a complete token/word in the selected text.
+
+    Examples
+    --------
+    'jonge man zoekt vrouw' -> {'jonge', 'man', 'zoekt', 'vrouw'}
+    'man-vrouw' -> {'man', 'vrouw'}
+    'mantel' -> {'mantel'}
     """
+    value = str(value).lower()
+
+    # Unicode-aware word tokenization.
+    return set(re.findall(r"(?u)\b\w+\b", value))
+
+
+def prepare_term_match(df, text_col, contains_terms=None, exact_terms=None):
+    """
+    Create a binary color column based on literal term matching.
+
+    Matching logic
+    --------------
+    - Term contains:
+      The selected text column contains any entered term as a literal substring.
+
+    - Term is exact token:
+      The selected text column contains any entered term as a complete token/word.
+
+    - If both are supplied:
+      A row matches if either condition is true.
+
+    Matching is case-insensitive.
+    """
+    contains_terms = contains_terms or []
+    exact_terms = exact_terms or []
+
     text_series = df[text_col].fillna("").astype(str)
 
     match_mask = pd.Series(False, index=df.index)
 
-    for pattern in patterns:
-        try:
-            match_mask |= text_series.str.contains(
-                pattern,
+    if contains_terms:
+        contains_mask = pd.Series(False, index=df.index)
+
+        for term in contains_terms:
+            contains_mask = contains_mask | text_series.str.contains(
+                term,
                 case=False,
                 na=False,
-                regex=True,
+                regex=False,
             )
-        except re.error as e:
-            raise ValueError(f"Invalid regex pattern `{pattern}`: {e}") from e
 
-    df[REGEX_MATCH_COL] = "No match"
-    df.loc[match_mask, REGEX_MATCH_COL] = "Regex match"
+        match_mask = match_mask | contains_mask
+
+    if exact_terms:
+        exact_tokens = set()
+
+        for term in exact_terms:
+            exact_tokens.update(tokenize_text(term))
+
+        if exact_tokens:
+            exact_mask = text_series.apply(
+                lambda value: bool(tokenize_text(value) & exact_tokens)
+            )
+
+            match_mask = match_mask | exact_mask
+
+    df[TERM_MATCH_COL] = "No match"
+    df.loc[match_mask, TERM_MATCH_COL] = "Term match"
 
     color_discrete_map = {
-        "Regex match": "#d62728",
+        "Term match": "#d62728",
         "No match": "#bdbdbd",
     }
 
     category_orders = {
-        REGEX_MATCH_COL: ["Regex match", "No match"]
+        TERM_MATCH_COL: ["No match", "Term match"]
     }
 
-    return df, REGEX_MATCH_COL, color_discrete_map, category_orders
+    return df, TERM_MATCH_COL, color_discrete_map, category_orders
 
 
 # Set up Streamlit app
 st.set_page_config(page_title="UMAP Text Explorer", layout="wide")
+
 st.title("UMAP Text Explorer")
 st.write(
     "Upload a CSV file with coordinate pairs such as `x/y`, "
@@ -265,7 +329,38 @@ if uploaded_file is not None:
 
     x_col, y_col = pair_lookup[selected_pair_label]
 
-    # Keep only rows with valid coordinates in the active coordinate space
+    mirror_x = st.sidebar.checkbox(
+        "Mirror x coordinates",
+        value=False,
+        help=(
+            "Flip the plot horizontally. The mirror axis is fixed and based on "
+            "the full uploaded dataset for the selected x-coordinate column, "
+            "before year/color/group filters are applied."
+        )
+    )
+
+    # Fixed mirror axis based on the full dataset for the active x column.
+    # This is computed before filtering rows by coordinates, year, color groups, etc.
+    fixed_x_mirror_center = None
+
+    if mirror_x:
+        full_x_values = df[x_col].dropna()
+
+        if full_x_values.empty:
+            st.warning(
+                f"Cannot mirror x coordinates because `{x_col}` has no valid numeric values."
+            )
+            st.stop()
+
+        full_x_min = full_x_values.min()
+        full_x_max = full_x_values.max()
+        fixed_x_mirror_center = (full_x_min + full_x_max) / 2
+
+        st.sidebar.caption(
+            f"Fixed mirror axis for `{x_col}`: {fixed_x_mirror_center:.4f}"
+        )
+
+    # Keep only rows with valid coordinates in the active coordinate space.
     df = df.dropna(subset=[x_col, y_col]).reset_index(drop=True)
 
     if df.empty:
@@ -278,47 +373,45 @@ if uploaded_file is not None:
         index=0
     )
 
-    use_regex_color = st.sidebar.checkbox(
-        "Color by regex match in selected text",
+    use_term_match_color = st.sidebar.checkbox(
+        "Color by term match in selected text",
         value=False,
         help=(
-            "If enabled, points are colored based on whether the selected text "
-            "column matches at least one of the entered regex patterns."
+            "If enabled, points are colored based on literal term matching in "
+            "the selected text column. Regex is not used."
         )
     )
 
-    regex_input = ""
-    if use_regex_color:
-        st.sidebar.markdown("### Regex patterns")
-        st.sidebar.markdown(
-            """
-            Enter one or more regex patterns, separated by commas or newlines.
+    contains_search_input = ""
+    exact_search_input = ""
 
-            **Examples**
-            - `jood.*` → matches `jood`, `joods`, `joodse`, ...
-            - `\\bprotestant\\w*\\b` → matches whole words starting with `protestant`
-            - `man+` → matches `man`, `mann`, `mannn`, ...
+    if use_term_match_color:
+        st.sidebar.markdown("### Term search")
 
-            **Regex tips**
-            - `*` = zero or more of the previous token
-            - `+` = one or more of the previous token
-            - `?` = optional
-            - `|` = OR
-            - `\\b` = word boundary
-
-            If you want to match a literal `*` or `+`, escape it as `\\*` or `\\+`.
-            """
-        )
-
-        regex_input = st.sidebar.text_area(
-            "Regex patterns (comma or newline separated)",
+        contains_search_input = st.sidebar.text_area(
+            "Term contains",
             value="",
+            height=90,
             help=(
-                "Enter one or more regex patterns. A row is marked as a match if "
-                "any pattern matches the selected text."
-            )
+                "Enter one or more literal partial search terms. "
+                "Use one per line, or separate with commas, semicolons, or pipes."
+            ),
         )
-        color_col = REGEX_MATCH_OPTION
+
+        exact_search_input = st.sidebar.text_area(
+            "Term is exact token",
+            value="",
+            height=90,
+            help=(
+                "Enter one or more terms that must occur as complete tokens/words. "
+                "For example, `man` matches `jonge man zoekt vrouw`, "
+                "but not `mantel`. Use one per line, or separate with commas, "
+                "semicolons, or pipes."
+            ),
+        )
+
+        color_col = TERM_MATCH_OPTION
+
     else:
         color_options = ["None"] + non_xy_columns
         if TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns:
@@ -397,8 +490,8 @@ if uploaded_file is not None:
             index=0
         )
 
-        df, plot_color_col, color_discrete_map, category_orders = prepare_goal_of_advertisement(
-            df, color_mode
+        df, plot_color_col, color_discrete_map, category_orders = (
+            prepare_goal_of_advertisement(df, color_mode)
         )
 
     elif color_col == LOCATION_COL:
@@ -408,8 +501,8 @@ if uploaded_file is not None:
             index=0
         )
 
-        df, plot_color_col, color_discrete_map, category_orders = prepare_location_publisher(
-            df, color_mode
+        df, plot_color_col, color_discrete_map, category_orders = (
+            prepare_location_publisher(df, color_mode)
         )
 
     elif color_col == AGE_COL:
@@ -422,8 +515,8 @@ if uploaded_file is not None:
             index=0
         )
 
-        df, plot_color_col, color_discrete_map, category_orders = prepare_religion_column(
-            df, color_col, color_mode
+        df, plot_color_col, color_discrete_map, category_orders = (
+            prepare_religion_column(df, color_col, color_mode)
         )
 
     elif color_col == TERM_BLEND_OPTION:
@@ -437,20 +530,26 @@ if uploaded_file is not None:
         color_discrete_map = None
         category_orders = None
 
-    elif color_col == REGEX_MATCH_OPTION:
-        patterns = parse_regex_patterns(regex_input)
+    elif color_col == TERM_MATCH_OPTION:
+        contains_terms = parse_search_terms(contains_search_input)
+        exact_terms = parse_search_terms(exact_search_input)
 
-        if not patterns:
-            st.sidebar.error("Please enter at least one regex pattern.")
-            st.stop()
-
-        try:
-            df, plot_color_col, color_discrete_map, category_orders = prepare_regex_match(
-                df, text_col, patterns
+        if not contains_terms and not exact_terms:
+            st.sidebar.error(
+                "Please enter at least one value in `Term contains` or "
+                "`Term is exact token`."
             )
-        except ValueError as e:
-            st.sidebar.error(str(e))
             st.stop()
+
+        df, plot_color_col, color_discrete_map, category_orders = prepare_term_match(
+            df=df,
+            text_col=text_col,
+            contains_terms=contains_terms,
+            exact_terms=exact_terms,
+        )
+
+        st.sidebar.caption(f"Contains search terms: {len(contains_terms)}")
+        st.sidebar.caption(f"Exact-token search terms: {len(exact_terms)}")
 
     elif color_col != "None":
         plot_color_col = color_col
@@ -558,6 +657,20 @@ if uploaded_file is not None:
 
     # Build plot
     df = df.copy()
+
+    # Optional horizontal mirror.
+    # The mirror axis is fixed from the full uploaded dataset,
+    # but the transformation is applied to the currently filtered dataframe.
+    x_axis_title = x_col
+
+    if mirror_x:
+        unmirrored_backup_col = f"_{x_col}_unmirrored"
+
+        if unmirrored_backup_col not in df.columns:
+            df[unmirrored_backup_col] = df[x_col]
+
+        df[x_col] = 2 * fixed_x_mirror_center - df[x_col]
+
     df["_row_id"] = range(len(df))
     df["hover_text_wrapped"] = df[text_col].apply(
         lambda x: wrap_hover_text(x, width=50, max_lines=10)
@@ -592,13 +705,13 @@ if uploaded_file is not None:
             "Modern terms: %{customdata[2]}<br>"
             "Hobby terms: %{customdata[3]}<br>"
             "Traditional terms: %{customdata[4]}<br>"
-            f"{x_col}=%{{x}}<br>"
+            f"{x_axis_title}=%{{x}}<br>"
             f"{y_col}=%{{y}}<extra></extra>"
         )
     else:
         hover_template = (
             "<b>%{customdata[1]}</b><br>"
-            f"{x_col}=%{{x}}<br>"
+            f"{x_axis_title}=%{{x}}<br>"
             f"{y_col}=%{{y}}<extra></extra>"
         )
 
@@ -608,6 +721,14 @@ if uploaded_file is not None:
         if df_anim.empty:
             st.warning("Not enough valid years to build the animation for this window size.")
             st.stop()
+
+        # If the helper expects columns named x/y, map the active coordinate pair
+        # to x/y inside the animation dataframe. This also preserves mirroring.
+        if x_col != "x" and x_col in df_anim.columns:
+            df_anim["x"] = df_anim[x_col]
+
+        if y_col != "y" and y_col in df_anim.columns:
+            df_anim["y"] = df_anim[y_col]
 
         df_anim = df_anim.sort_values(["frame_year", "_row_id"]).reset_index(drop=True)
 
@@ -621,7 +742,7 @@ if uploaded_file is not None:
         )
 
         fig.update_layout(
-            xaxis_title=x_col,
+            xaxis_title=x_axis_title,
             yaxis_title=y_col,
         )
 
@@ -678,7 +799,7 @@ if uploaded_file is not None:
             height=700,
             dragmode="pan",
             margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title=x_col,
+            xaxis_title=x_axis_title,
             yaxis_title=y_col,
             legend_title_text=plot_color_col if plot_color_col is not None else ""
         )
@@ -735,9 +856,9 @@ if uploaded_file is not None:
         fig.update_layout(
             height=700,
             dragmode="lasso",
-            uirevision="keep_zoom",
+            uirevision=f"keep_zoom_{selected_pair_label}_{mirror_x}",
             margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title=x_col,
+            xaxis_title=x_axis_title,
             yaxis_title=y_col,
             legend_title_text=plot_color_col if plot_color_col is not None else "",
             showlegend=not use_term_blend
@@ -757,7 +878,7 @@ if uploaded_file is not None:
             event = st.plotly_chart(
                 fig,
                 use_container_width=True,
-                key=f"scatter_plot_variant_animated_{x_col}_{y_col}",
+                key=f"scatter_plot_variant_animated_{x_col}_{y_col}_{mirror_x}",
                 config={
                     "scrollZoom": True,
                     "displaylogo": False
@@ -767,7 +888,7 @@ if uploaded_file is not None:
             event = st.plotly_chart(
                 fig,
                 use_container_width=True,
-                key=f"scatter_plot_variant_{x_col}_{y_col}",
+                key=f"scatter_plot_variant_{x_col}_{y_col}_{mirror_x}",
                 on_select="rerun",
                 selection_mode=("box", "lasso"),
                 config={
@@ -807,6 +928,7 @@ if uploaded_file is not None:
                 .loc[selected_row_ids]
                 .reset_index()
             )
+
             display_selected_df = selected_df.drop(
                 columns=["_row_id", "hover_text_wrapped"],
                 errors="ignore"
@@ -824,7 +946,9 @@ if uploaded_file is not None:
             st.info("Select points using lasso or box selection.")
 
     st.divider()
+
     st.subheader("Data Preview (selected)")
+
     if not display_selected_df.empty:
         st.dataframe(display_selected_df, use_container_width=True)
     else:
