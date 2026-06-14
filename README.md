@@ -20,7 +20,7 @@ This app is designed for interactive exploration of precomputed 2D coordinates. 
   - age groups
   - religion columns
   - term blend categories
-  - regex-based text matching
+  - literal term matching in the selected text column
 - filter by year
 - animate a moving year window
 - inspect selected points and their associated text
@@ -70,27 +70,13 @@ With at least one of the following column names:
 - `SS extended`
 - `DS extended`
 
-## Regex-based coloring
+## Term matching
+The app can color points based on whether the selected text column matches one or more literal search terms.
 
-You can color points based on whether the selected text column matches one or more regex patterns.
+There are two matching modes:
 
-Examples:
-
-- `jood.*`
-- `\bprotestant\w*\b`
-- `man+`
-
-A row is marked as a match if **at least one** regex pattern matches the selected text column.
-
-### Regex syntax tips
-
-- `*` = zero or more of the previous token
-- `+` = one or more of the previous token
-- `?` = optional
-- `|` = OR
-- `\b` = word boundary
-
-If you want to match a literal `*` or `+`, escape it as `\*` or `\+`.
+- `Term contains`: Matches rows where the selected text column contains the entered value as a literal substring.
+- `Term is exact token`: Matches rows where the selected text column contains the entered value as a complete token or word.
 
 ---
 
