@@ -182,7 +182,6 @@ def tokenize_text(value):
     """
     value = str(value).lower()
 
-    # Unicode-aware word tokenization.
     return set(re.findall(r"(?u)\b\w+\b", value))
 
 
@@ -251,7 +250,6 @@ def prepare_term_match(df, text_col, contains_terms=None, exact_terms=None):
     return df, TERM_MATCH_COL, color_discrete_map, category_orders
 
 
-# Set up Streamlit app
 st.set_page_config(page_title="UMAP Text Explorer", layout="wide")
 
 st.title("UMAP Text Explorer")
@@ -279,7 +277,6 @@ if uploaded_file is not None:
 
     coordinate_columns = sorted({col for pair in coordinate_pairs for col in pair})
 
-    # Convert all detected coordinate columns to numeric
     for col in coordinate_columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -288,7 +285,6 @@ if uploaded_file is not None:
 
     all_columns = df.columns.tolist()
 
-    # Exclude coordinate columns from text-column options
     non_xy_columns = [col for col in all_columns if col not in coordinate_columns]
 
     if not non_xy_columns:
@@ -298,17 +294,14 @@ if uploaded_file is not None:
         )
         st.stop()
 
-    # Sidebar
     st.sidebar.header("Settings")
 
-    # Build semantic labels and ensure uniqueness if needed
     pair_options = []
     pair_lookup = {}
 
     for x_pair, y_pair in coordinate_pairs:
         label = format_coordinate_pair_label(x_pair, y_pair)
 
-        # If a label ever collides, fall back to including raw column names
         if label in pair_lookup:
             label = f"{label} ({x_pair} / {y_pair})"
 
@@ -329,38 +322,6 @@ if uploaded_file is not None:
 
     x_col, y_col = pair_lookup[selected_pair_label]
 
-    mirror_x = st.sidebar.checkbox(
-        "Mirror x coordinates",
-        value=False,
-        help=(
-            "Flip the plot horizontally. The mirror axis is fixed and based on "
-            "the full uploaded dataset for the selected x-coordinate column, "
-            "before year/color/group filters are applied."
-        )
-    )
-
-    # Fixed mirror axis based on the full dataset for the active x column.
-    # This is computed before filtering rows by coordinates, year, color groups, etc.
-    fixed_x_mirror_center = None
-
-    if mirror_x:
-        full_x_values = df[x_col].dropna()
-
-        if full_x_values.empty:
-            st.warning(
-                f"Cannot mirror x coordinates because `{x_col}` has no valid numeric values."
-            )
-            st.stop()
-
-        full_x_min = full_x_values.min()
-        full_x_max = full_x_values.max()
-        fixed_x_mirror_center = (full_x_min + full_x_max) / 2
-
-        st.sidebar.caption(
-            f"Fixed mirror axis for `{x_col}`: {fixed_x_mirror_center:.4f}"
-        )
-
-    # Keep only rows with valid coordinates in the active coordinate space.
     df = df.dropna(subset=[x_col, y_col]).reset_index(drop=True)
 
     if df.empty:
@@ -426,7 +387,6 @@ if uploaded_file is not None:
     point_size = st.sidebar.slider("Point size", 1, 30, 4)
     marker_opacity = st.sidebar.slider("Opacity", 0.1, 1.0, 0.7)
 
-    # Year sidebar settings and filtering
     if YEAR_COL in df.columns:
         year_values = df[YEAR_COL].dropna()
 
@@ -474,10 +434,8 @@ if uploaded_file is not None:
     else:
         animate_time = False
 
-    # Ensure text column is string
     df[text_col] = df[text_col].astype(str)
 
-    # Defaults for plotting
     plot_color_col = None
     color_discrete_map = None
     category_orders = None
@@ -554,7 +512,6 @@ if uploaded_file is not None:
     elif color_col != "None":
         plot_color_col = color_col
 
-    # Optional: hide "Not mentioned" for the active color grouping
     hide_not_mentioned = False
 
     if plot_color_col is not None:
@@ -614,7 +571,6 @@ if uploaded_file is not None:
             unsafe_allow_html=True
         )
 
-    # Static-only minimum group size filter for categorical color groups
     if not animate_time and plot_color_col is not None:
         is_categorical_color = (
             color_discrete_map is not None
@@ -655,21 +611,9 @@ if uploaded_file is not None:
                         ]
                     }
 
-    # Build plot
     df = df.copy()
 
-    # Optional horizontal mirror.
-    # The mirror axis is fixed from the full uploaded dataset,
-    # but the transformation is applied to the currently filtered dataframe.
     x_axis_title = x_col
-
-    if mirror_x:
-        unmirrored_backup_col = f"_{x_col}_unmirrored"
-
-        if unmirrored_backup_col not in df.columns:
-            df[unmirrored_backup_col] = df[x_col]
-
-        df[x_col] = 2 * fixed_x_mirror_center - df[x_col]
 
     df["_row_id"] = range(len(df))
     df["hover_text_wrapped"] = df[text_col].apply(
@@ -722,8 +666,6 @@ if uploaded_file is not None:
             st.warning("Not enough valid years to build the animation for this window size.")
             st.stop()
 
-        # If the helper expects columns named x/y, map the active coordinate pair
-        # to x/y inside the animation dataframe. This also preserves mirroring.
         if x_col != "x" and x_col in df_anim.columns:
             df_anim["x"] = df_anim[x_col]
 
@@ -856,7 +798,7 @@ if uploaded_file is not None:
         fig.update_layout(
             height=700,
             dragmode="lasso",
-            uirevision=f"keep_zoom_{selected_pair_label}_{mirror_x}",
+            uirevision=f"keep_zoom_{selected_pair_label}",
             margin=dict(l=10, r=10, t=40, b=10),
             xaxis_title=x_axis_title,
             yaxis_title=y_col,
@@ -878,7 +820,7 @@ if uploaded_file is not None:
             event = st.plotly_chart(
                 fig,
                 use_container_width=True,
-                key=f"scatter_plot_variant_animated_{x_col}_{y_col}_{mirror_x}",
+                key=f"scatter_plot_variant_animated_{x_col}_{y_col}",
                 config={
                     "scrollZoom": True,
                     "displaylogo": False
@@ -888,7 +830,7 @@ if uploaded_file is not None:
             event = st.plotly_chart(
                 fig,
                 use_container_width=True,
-                key=f"scatter_plot_variant_{x_col}_{y_col}_{mirror_x}",
+                key=f"scatter_plot_variant_{x_col}_{y_col}",
                 on_select="rerun",
                 selection_mode=("box", "lasso"),
                 config={
@@ -897,7 +839,6 @@ if uploaded_file is not None:
                 }
             )
 
-    # Read selected points
     selected_row_ids = []
     selected_df = pd.DataFrame()
     display_selected_df = pd.DataFrame()
