@@ -1,4 +1,5 @@
 import re
+from io import BytesIO
 
 import pandas as pd
 import plotly.express as px
@@ -48,8 +49,14 @@ from helpers.helper_animation import (
     build_term_blend_animation_figure,
 )
 
+
+TERM_MATCH_OPTION = "Term match"
+TERM_MATCH_COL = "_term_match"
+
+
 def normalize_column_name(name):
     return re.sub(r"\s+", " ", str(name).strip()).casefold()
+
 
 EXCLUDED_COLOR_SELECTOR_COLUMNS = {
     normalize_column_name("Nr advertisement"),
@@ -91,62 +98,6 @@ EXCLUDED_COLOR_SELECTOR_COLUMNS = {
     normalize_column_name("Terms (traditional/modern/hobby)"),
 }
 
-def add_animation_legend_seed_rows(
-    df_anim,
-    color_col,
-    categories,
-    x_col,
-    y_col,
-    x_range,
-    y_range,
-):
-    """
-    Ensure all categories appear in the legend for animated Plotly scatter plots.
-
-    Plotly may only initialize legend entries from categories visible in the
-    initial animation frame. We add one off-canvas row per category to the first
-    frame, while keeping fixed axis ranges so these points never appear onscreen.
-    """
-    if df_anim.empty or not categories or color_col not in df_anim.columns:
-        return df_anim
-
-    if "frame_label" not in df_anim.columns:
-        return df_anim
-
-    first_frame_label = df_anim["frame_label"].iloc[0]
-    first_frame_year = (
-        df_anim["frame_year"].iloc[0]
-        if "frame_year" in df_anim.columns
-        else None
-    )
-
-    x_span = max(x_range[1] - x_range[0], 1.0)
-    y_span = max(y_range[1] - y_range[0], 1.0)
-
-    dummy_x = x_range[0] - x_span
-    dummy_y = y_range[0] - y_span
-
-    dummy_rows = []
-
-    for i, category in enumerate(categories):
-        row = {col: None for col in df_anim.columns}
-        row[color_col] = category
-        row[x_col] = dummy_x - i * 1e-6
-        row[y_col] = dummy_y - i * 1e-6
-        row["_row_id"] = f"__legend_dummy__{i}"
-        row["hover_text_wrapped"] = ""
-
-        row["frame_label"] = first_frame_label
-        if first_frame_year is not None:
-            row["frame_year"] = first_frame_year
-
-        dummy_rows.append(row)
-
-    return pd.concat([df_anim, pd.DataFrame(dummy_rows)], ignore_index=True)
-
-TERM_MATCH_OPTION = "Term match"
-TERM_MATCH_COL = "_term_match"
-
 
 def get_coordinate_pairs(df):
     """
@@ -181,18 +132,6 @@ def get_coordinate_pairs(df):
 
 
 def format_coordinate_pair_label(x_col, y_col):
-    """
-    Create a semantic label for a coordinate pair dropdown.
-
-    Examples
-    --------
-    x / y -> OCR extended
-    x_profile_reduced / y_profile_reduced -> OCR profile reduced
-    x_ss / y_ss -> SS extended
-    x_ss_profile_reduced / y_ss_profile_reduced -> SS profile reduced
-    x_ds / y_ds -> DS extended
-    x_ds_profile_reduced / y_ds_profile_reduced -> DS profile reduced
-    """
     if x_col == "x" and y_col == "y":
         return "OCR extended"
 
@@ -211,17 +150,13 @@ def format_coordinate_pair_label(x_col, y_col):
     if x_col == "x_ds_profile_reduced" and y_col == "y_ds_profile_reduced":
         return "DS profile reduced"
 
-    # Fallback for any future coordinate families
     if x_col.startswith("x_"):
         suffix = x_col[2:]
     else:
         suffix = ""
 
     is_profile_reduced = suffix.endswith("_profile_reduced")
-    if is_profile_reduced:
-        base = suffix[:-len("_profile_reduced")]
-    else:
-        base = suffix
+    base = suffix[:-len("_profile_reduced")] if is_profile_reduced else suffix
 
     if base in {"", "ocr"}:
         source_label = "OCR"
@@ -237,17 +172,6 @@ def format_coordinate_pair_label(x_col, y_col):
 
 
 def parse_search_terms(raw_text):
-    """
-    Parse one or more literal search terms.
-
-    Supports:
-    - one term per line
-    - comma-separated terms
-    - semicolon-separated terms
-    - pipe-separated terms
-
-    Regex is not used as user input.
-    """
     if not raw_text:
         return []
 
@@ -263,44 +187,47 @@ def parse_search_terms(raw_text):
 
 
 def tokenize_text(value):
-    """
-    Tokenize text into lowercase word tokens.
-
-    Used for 'Term is exact token':
-    the query must match a complete token/word in the selected text.
-
-    Examples
-    --------
-    'jonge man zoekt vrouw' -> {'jonge', 'man', 'zoekt', 'vrouw'}
-    'man-vrouw' -> {'man', 'vrouw'}
-    'mantel' -> {'mantel'}
-    """
     value = str(value).lower()
-
     return set(re.findall(r"(?u)\b\w+\b", value))
 
 
+@st.cache_data(show_spinner=False)
+def load_and_prepare_csv(file_bytes):
+    df = pd.read_csv(BytesIO(file_bytes))
+
+    coordinate_pairs = get_coordinate_pairs(df)
+    coordinate_columns = sorted({col for pair in coordinate_pairs for col in pair})
+
+    for col in coordinate_columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if YEAR_COL in df.columns:
+        df[YEAR_COL] = pd.to_numeric(df[YEAR_COL], errors="coerce")
+
+    return df, coordinate_pairs, coordinate_columns
+
+
+@st.cache_data(show_spinner=False)
+def cached_wrap_hover_texts(values, width=50, max_lines=10):
+    return [wrap_hover_text(v, width=width, max_lines=max_lines) for v in values]
+
+
+@st.cache_data(show_spinner=False)
+def cached_tokenize_values(values):
+    return [tokenize_text(v) for v in values]
+
+
+@st.cache_data(show_spinner=False)
+def cached_build_time_window_df(df, year_col, window_size):
+    return build_time_window_df(df, year_col=year_col, window_size=window_size)
+
+
 def prepare_term_match(df, text_col, contains_terms=None, exact_terms=None):
-    """
-    Create a binary color column based on literal term matching.
-
-    Matching logic
-    --------------
-    - Term contains:
-      The selected text column contains any entered term as a literal substring.
-
-    - Term is exact token:
-      The selected text column contains any entered term as a complete token/word.
-
-    - If both are supplied:
-      A row matches if either condition is true.
-
-    Matching is case-insensitive.
-    """
     contains_terms = contains_terms or []
     exact_terms = exact_terms or []
 
-    text_series = df[text_col].fillna("").astype(str)
+    text_values = df[text_col].fillna("").astype(str).tolist()
+    text_series = pd.Series(text_values, index=df.index)
 
     match_mask = pd.Series(False, index=df.index)
 
@@ -319,17 +246,18 @@ def prepare_term_match(df, text_col, contains_terms=None, exact_terms=None):
 
     if exact_terms:
         exact_tokens = set()
-
         for term in exact_terms:
             exact_tokens.update(tokenize_text(term))
 
         if exact_tokens:
-            exact_mask = text_series.apply(
-                lambda value: bool(tokenize_text(value) & exact_tokens)
+            token_sets = cached_tokenize_values(text_values)
+            exact_mask = pd.Series(
+                [bool(tokens & exact_tokens) for tokens in token_sets],
+                index=df.index
             )
-
             match_mask = match_mask | exact_mask
 
+    df = df.copy()
     df[TERM_MATCH_COL] = "No match"
     df.loc[match_mask, TERM_MATCH_COL] = "Term match"
 
@@ -358,10 +286,9 @@ st.write(
 uploaded_file = st.file_uploader("Upload your CSV", type="csv")
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+    file_bytes = uploaded_file.getvalue()
+    df, coordinate_pairs, coordinate_columns = load_and_prepare_csv(file_bytes)
     df = df.copy()
-
-    coordinate_pairs = get_coordinate_pairs(df)
 
     if not coordinate_pairs:
         st.error(
@@ -370,16 +297,7 @@ if uploaded_file is not None:
         )
         st.stop()
 
-    coordinate_columns = sorted({col for pair in coordinate_pairs for col in pair})
-
-    for col in coordinate_columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if YEAR_COL in df.columns:
-        df[YEAR_COL] = pd.to_numeric(df[YEAR_COL], errors="coerce")
-
     all_columns = df.columns.tolist()
-
     non_xy_columns = [col for col in all_columns if col not in coordinate_columns]
 
     if not non_xy_columns:
@@ -389,17 +307,13 @@ if uploaded_file is not None:
         )
         st.stop()
 
-    st.sidebar.header("Settings")
-
     pair_options = []
     pair_lookup = {}
 
     for x_pair, y_pair in coordinate_pairs:
         label = format_coordinate_pair_label(x_pair, y_pair)
-
         if label in pair_lookup:
             label = f"{label} ({x_pair} / {y_pair})"
-
         pair_options.append(label)
         pair_lookup[label] = (x_pair, y_pair)
 
@@ -409,137 +323,168 @@ if uploaded_file is not None:
             default_pair_index = i
             break
 
-    selected_pair_label = st.sidebar.selectbox(
-        "Coordinate pair",
-        options=pair_options,
-        index=default_pair_index,
-    )
+    color_candidate_columns = [
+        col for col in non_xy_columns
+        if normalize_column_name(col) not in EXCLUDED_COLOR_SELECTOR_COLUMNS
+        and normalize_column_name(col) != normalize_column_name(YEAR_COL)
+    ]
+
+    color_options = ["None"] + color_candidate_columns
+    if (
+        (TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns)
+        and normalize_column_name(TERM_BLEND_OPTION) not in EXCLUDED_COLOR_SELECTOR_COLUMNS
+    ):
+        color_options.append(TERM_BLEND_OPTION)
+
+    st.sidebar.header("Settings")
+    st.sidebar.caption("Change settings and click Apply to update the plot.")
+
+    with st.sidebar.form("settings_form"):
+        selected_pair_label = st.selectbox(
+            "Coordinate pair",
+            options=pair_options,
+            index=default_pair_index,
+        )
+
+        x_col, y_col = pair_lookup[selected_pair_label]
+
+        text_col = st.selectbox(
+            "Text column",
+            options=non_xy_columns,
+            index=55
+        )
+
+        use_term_match_color = st.checkbox(
+            "Color by term match in selected text",
+            value=False,
+            help=(
+                "If enabled, points are colored based on literal term matching in "
+                "the selected text column. Regex is not used."
+            )
+        )
+
+        contains_search_input = ""
+        exact_search_input = ""
+
+        if use_term_match_color:
+            st.markdown("### Term search")
+
+            contains_search_input = st.text_area(
+                "Term contains",
+                value="",
+                height=90,
+                help=(
+                    "Enter one or more literal partial search terms. "
+                    "Use one per line, or separate with commas, semicolons, or pipes."
+                ),
+            )
+
+            exact_search_input = st.text_area(
+                "Term is exact token",
+                value="",
+                height=90,
+                help=(
+                    "Enter one or more terms that must occur as complete tokens/words. "
+                    "For example, `man` matches `jonge man zoekt vrouw`, "
+                    "but not `mantel`."
+                ),
+            )
+
+            color_col = TERM_MATCH_OPTION
+        else:
+            color_col = st.selectbox(
+                "Color column",
+                options=color_options,
+                index=0
+            )
+
+        point_size = st.slider("Point size", 1, 30, 4)
+        marker_opacity = st.slider("Opacity", 0.1, 1.0, 0.7)
+
+        animate_time = False
+        window_size = 5
+        frame_duration = 100
+        selected_years = None
+
+        if YEAR_COL in df.columns:
+            year_values = df[YEAR_COL].dropna()
+
+            if not year_values.empty:
+                year_min = int(year_values.min())
+                year_max = int(year_values.max())
+
+                selected_years = st.slider(
+                    "Year range",
+                    min_value=year_min,
+                    max_value=year_max,
+                    value=(year_min, year_max),
+                    step=1
+                )
+
+                animate_time = st.checkbox("Animate 10-year moving window", value=False)
+
+                if animate_time:
+                    window_size = st.slider(
+                        "Years on each side of center year",
+                        min_value=1,
+                        max_value=20,
+                        value=5,
+                        step=1
+                    )
+                    frame_duration = st.slider(
+                        "Animation speed (ms per frame)",
+                        min_value=50,
+                        max_value=200,
+                        value=100,
+                        step=50
+                    )
+            else:
+                st.info("Column 'Year' exists, but contains no valid numeric values.")
+
+        goal_color_mode = "Show all options"
+        location_color_mode = "Show all options"
+        religion_color_mode = "Show all options"
+
+        if color_col == GOAL_COL:
+            goal_color_mode = st.radio(
+                "Goal of advertisement display mode",
+                options=["Show all options", "Show merged options"],
+                index=0
+            )
+
+        elif color_col == LOCATION_COL:
+            location_color_mode = st.radio(
+                "Location publisher display mode",
+                options=["Show all options", "Show merged options"],
+                index=0
+            )
+
+        elif color_col in RELIGION_COLS:
+            religion_color_mode = st.radio(
+                f"{color_col} display mode",
+                options=["Show all options", "Show merged options"],
+                index=0
+            )
+
+        apply_settings = st.form_submit_button("Apply")
 
     x_col, y_col = pair_lookup[selected_pair_label]
 
-    df = df.dropna(subset=[x_col, y_col]).reset_index(drop=True)
+    df = df.dropna(subset=[x_col, y_col])
 
-    if df.empty:
-        st.warning(f"No valid rows remain after cleaning {x_col} and {y_col}.")
-        st.stop()
-
-    text_col = st.sidebar.selectbox(
-        "Text column",
-        options=non_xy_columns,
-        index=0
-    )
-
-    use_term_match_color = st.sidebar.checkbox(
-        "Color by term match in selected text",
-        value=False,
-        help=(
-            "If enabled, points are colored based on literal term matching in "
-            "the selected text column. Regex is not used."
-        )
-    )
-
-    contains_search_input = ""
-    exact_search_input = ""
-
-    if use_term_match_color:
-        st.sidebar.markdown("### Term search")
-
-        contains_search_input = st.sidebar.text_area(
-            "Term contains",
-            value="",
-            height=90,
-            help=(
-                "Enter one or more literal partial search terms. "
-                "Use one per line, or separate with commas, semicolons, or pipes."
-            ),
-        )
-
-        exact_search_input = st.sidebar.text_area(
-            "Term is exact token",
-            value="",
-            height=90,
-            help=(
-                "Enter one or more terms that must occur as complete tokens/words. "
-                "For example, `man` matches `jonge man zoekt vrouw`, "
-                "but not `mantel`. Use one per line, or separate with commas, "
-                "semicolons, or pipes."
-            ),
-        )
-
-        color_col = TERM_MATCH_OPTION
-
-    else:
-        color_candidate_columns = [
-            col for col in non_xy_columns
-            if normalize_column_name(col) not in EXCLUDED_COLOR_SELECTOR_COLUMNS
-            and normalize_column_name(col) != normalize_column_name(YEAR_COL)
+    if selected_years is not None and YEAR_COL in df.columns:
+        df = df[
+            (df[YEAR_COL] >= selected_years[0]) &
+            (df[YEAR_COL] <= selected_years[1])
         ]
 
-        color_options = ["None"] + color_candidate_columns
+    df = df.reset_index(drop=True)
 
-        if (
-            (TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns)
-            and normalize_column_name(TERM_BLEND_OPTION) not in EXCLUDED_COLOR_SELECTOR_COLUMNS
-        ):
-            color_options.append(TERM_BLEND_OPTION)
+    if df.empty:
+        st.warning("No rows remain after applying the current filters.")
+        st.stop()
 
-        color_col = st.sidebar.selectbox(
-            "Color column",
-            options=color_options,
-            index=0
-        )
-
-    point_size = st.sidebar.slider("Point size", 1, 30, 4)
-    marker_opacity = st.sidebar.slider("Opacity", 0.1, 1.0, 0.7)
-
-    if YEAR_COL in df.columns:
-        year_values = df[YEAR_COL].dropna()
-
-        if not year_values.empty:
-            year_min = int(year_values.min())
-            year_max = int(year_values.max())
-
-            selected_years = st.sidebar.slider(
-                "Year range",
-                min_value=year_min,
-                max_value=year_max,
-                value=(year_min, year_max),
-                step=1
-            )
-
-            df = df[
-                (df[YEAR_COL] >= selected_years[0]) &
-                (df[YEAR_COL] <= selected_years[1])
-            ].reset_index(drop=True)
-
-            if df.empty:
-                st.warning("No rows remain after applying the Year filter.")
-                st.stop()
-
-            animate_time = st.sidebar.checkbox("Animate 10-year moving window", value=False)
-
-            if animate_time:
-                window_size = st.sidebar.slider(
-                    "Years on each side of center year",
-                    min_value=1,
-                    max_value=20,
-                    value=5,
-                    step=1
-                )
-                frame_duration = st.sidebar.slider(
-                    "Animation speed (ms per frame)",
-                    min_value=50,
-                    max_value=200,
-                    value=100,
-                    step=50
-                )
-        else:
-            animate_time = False
-            st.sidebar.info("Column 'Year' exists, but contains no valid numeric values.")
-    else:
-        animate_time = False
-
-    df[text_col] = df[text_col].astype(str)
+    df[text_col] = df[text_col].fillna("").astype(str)
 
     plot_color_col = None
     color_discrete_map = None
@@ -547,39 +492,21 @@ if uploaded_file is not None:
     use_term_blend = False
 
     if color_col == GOAL_COL:
-        color_mode = st.sidebar.radio(
-            "Goal of advertisement display mode",
-            options=["Show all options", "Show merged options"],
-            index=0
-        )
-
         df, plot_color_col, color_discrete_map, category_orders = (
-            prepare_goal_of_advertisement(df, color_mode)
+            prepare_goal_of_advertisement(df, goal_color_mode)
         )
 
     elif color_col == LOCATION_COL:
-        color_mode = st.sidebar.radio(
-            "Location publisher display mode",
-            options=["Show all options", "Show merged options"],
-            index=0
-        )
-
         df, plot_color_col, color_discrete_map, category_orders = (
-            prepare_location_publisher(df, color_mode)
+            prepare_location_publisher(df, location_color_mode)
         )
 
     elif color_col == AGE_COL:
         df, plot_color_col, color_discrete_map, category_orders = prepare_age_groups(df)
 
     elif color_col in RELIGION_COLS:
-        color_mode = st.sidebar.radio(
-            f"{color_col} display mode",
-            options=["Show all options", "Show merged options"],
-            index=0
-        )
-
         df, plot_color_col, color_discrete_map, category_orders = (
-            prepare_religion_column(df, color_col, color_mode)
+            prepare_religion_column(df, color_col, religion_color_mode)
         )
 
     elif color_col == TERM_BLEND_OPTION:
@@ -588,10 +515,6 @@ if uploaded_file is not None:
         else:
             df = prepare_term_blend(df, TERM_SOURCE_COL)
         use_term_blend = True
-
-        plot_color_col = None
-        color_discrete_map = None
-        category_orders = None
 
     elif color_col == TERM_MATCH_OPTION:
         contains_terms = parse_search_terms(contains_search_input)
@@ -616,6 +539,12 @@ if uploaded_file is not None:
 
     elif color_col != "None":
         plot_color_col = color_col
+
+    if plot_color_col is not None and plot_color_col in df.columns:
+        if df[plot_color_col].dtype == object:
+            unique_count = df[plot_color_col].nunique(dropna=False)
+            if unique_count < max(len(df) * 0.5, 100):
+                df[plot_color_col] = df[plot_color_col].astype("category")
 
     hide_not_mentioned = False
 
@@ -699,7 +628,6 @@ if uploaded_file is not None:
                 )
 
                 keep_groups = group_counts[group_counts >= min_group_size].index.tolist()
-
                 df = df[df[plot_color_col].isin(keep_groups)].reset_index(drop=True)
 
                 if df.empty:
@@ -717,13 +645,10 @@ if uploaded_file is not None:
                     }
 
     df = df.copy()
-
-    x_axis_title = x_col
-
     df["_row_id"] = range(len(df))
-    df["hover_text_wrapped"] = df[text_col].apply(
-        lambda x: wrap_hover_text(x, width=50, max_lines=10)
-    )
+
+    hover_values = cached_wrap_hover_texts(df[text_col].tolist(), width=50, max_lines=10)
+    df["hover_text_wrapped"] = hover_values
 
     custom_data_cols = ["_row_id", "hover_text_wrapped"]
 
@@ -743,10 +668,15 @@ if uploaded_file is not None:
     if not animate_time and not use_term_blend:
         base_plot_kwargs["render_mode"] = "webgl"
 
-    x_pad = max((df[x_col].max() - df[x_col].min()) * 0.05, 1e-6)
-    y_pad = max((df[y_col].max() - df[y_col].min()) * 0.05, 1e-6)
-    x_range = [df[x_col].min() - x_pad, df[x_col].max() + x_pad]
-    y_range = [df[y_col].min() - y_pad, df[y_col].max() + y_pad]
+    x_min = df[x_col].min()
+    x_max = df[x_col].max()
+    y_min = df[y_col].min()
+    y_max = df[y_col].max()
+
+    x_pad = max((x_max - x_min) * 0.05, 1e-6)
+    y_pad = max((y_max - y_min) * 0.05, 1e-6)
+    x_range = [x_min - x_pad, x_max + x_pad]
+    y_range = [y_min - y_pad, y_max + y_pad]
 
     if use_term_blend:
         hover_template = (
@@ -754,27 +684,30 @@ if uploaded_file is not None:
             "Modern terms: %{customdata[2]}<br>"
             "Hobby terms: %{customdata[3]}<br>"
             "Traditional terms: %{customdata[4]}<br>"
-            f"{x_axis_title}=%{{x}}<br>"
+            f"{x_col}=%{{x}}<br>"
             f"{y_col}=%{{y}}<extra></extra>"
         )
     else:
         hover_template = (
             "<b>%{customdata[1]}</b><br>"
-            f"{x_axis_title}=%{{x}}<br>"
+            f"{x_col}=%{{x}}<br>"
             f"{y_col}=%{{y}}<extra></extra>"
         )
 
     if animate_time and use_term_blend:
-        df_anim = build_time_window_df(df, year_col=YEAR_COL, window_size=window_size)
+        df_anim = cached_build_time_window_df(df, year_col=YEAR_COL, window_size=window_size)
 
         if df_anim.empty:
             st.warning("Not enough valid years to build the animation for this window size.")
             st.stop()
 
         if x_col != "x" and x_col in df_anim.columns:
+            df_anim = df_anim.copy()
             df_anim["x"] = df_anim[x_col]
 
         if y_col != "y" and y_col in df_anim.columns:
+            if "x" not in df_anim.columns:
+                df_anim = df_anim.copy()
             df_anim["y"] = df_anim[y_col]
 
         df_anim = df_anim.sort_values(["frame_year", "_row_id"]).reset_index(drop=True)
@@ -789,7 +722,7 @@ if uploaded_file is not None:
         )
 
         fig.update_layout(
-            xaxis_title=x_axis_title,
+            xaxis_title=x_col,
             yaxis_title=y_col,
         )
 
@@ -802,7 +735,7 @@ if uploaded_file is not None:
                     ordered=True
                 )
 
-        df_anim = build_time_window_df(df, year_col=YEAR_COL, window_size=window_size)
+        df_anim = cached_build_time_window_df(df, year_col=YEAR_COL, window_size=window_size)
 
         if df_anim.empty:
             st.warning("Not enough valid years to build the animation for this window size.")
@@ -820,12 +753,7 @@ if uploaded_file is not None:
             if category_orders is not None and plot_color_col in category_orders:
                 categories = category_orders[plot_color_col]
             else:
-                categories = (
-                    df_anim[plot_color_col]
-                    .dropna()
-                    .tolist()
-                )
-                categories = list(dict.fromkeys(categories))
+                categories = list(dict.fromkeys(df_anim[plot_color_col].dropna().tolist()))
 
             fig = build_categorical_animation_figure(
                 df_anim=df_anim,
@@ -866,7 +794,6 @@ if uploaded_file is not None:
             fig = px.scatter(**plot_kwargs)
 
             fig.update_traces(hovertemplate=hover_template)
-
             fig.update_traces(
                 marker=dict(size=point_size, opacity=marker_opacity),
                 selector=dict(mode="markers")
@@ -876,7 +803,7 @@ if uploaded_file is not None:
                 height=700,
                 dragmode="pan",
                 margin=dict(l=10, r=10, t=40, b=10),
-                xaxis_title=x_axis_title,
+                xaxis_title=x_col,
                 yaxis_title=y_col,
                 legend_title_text=plot_color_col if plot_color_col is not None else ""
             )
@@ -935,7 +862,7 @@ if uploaded_file is not None:
             dragmode="lasso",
             uirevision=f"keep_zoom_{selected_pair_label}",
             margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title=x_axis_title,
+            xaxis_title=x_col,
             yaxis_title=y_col,
             legend_title_text=plot_color_col if plot_color_col is not None else "",
             showlegend=not use_term_blend
@@ -1024,14 +951,16 @@ if uploaded_file is not None:
     st.divider()
 
     st.subheader("Data Preview (selected)")
-
     if not display_selected_df.empty:
         st.dataframe(display_selected_df, use_container_width=True)
     else:
         st.info("No points selected.")
 
-    st.subheader("Data Preview (plot)")
-    st.dataframe(df, use_container_width=True)
+    with st.expander("Data Preview (plot)", expanded=False):
+        preview_limit = min(1000, len(df))
+        st.dataframe(df.head(preview_limit), use_container_width=True)
+        if len(df) > preview_limit:
+            st.caption(f"Showing first {preview_limit:,} of {len(df):,} rows.")
 
 else:
     st.info("Please upload a CSV file first.")
