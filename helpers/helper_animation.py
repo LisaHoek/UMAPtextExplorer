@@ -1,6 +1,7 @@
 import pandas as pd
 import plotly.graph_objects as go
 
+
 def build_time_window_df(df, year_col="Year", window_size=5):
     """
     Build an animated dataframe where each frame shows a moving year window.
@@ -37,38 +38,194 @@ def build_time_window_df(df, year_col="Year", window_size=5):
 
     return pd.concat(frames, ignore_index=True)
 
-def add_animation_category_dummies(df_anim, color_col, categories, x_col="x", y_col="y"):
+
+def build_categorical_animation_figure(
+    df_anim,
+    x_col,
+    y_col,
+    color_col,
+    categories,
+    point_size,
+    marker_opacity,
+    x_range,
+    y_range,
+    frame_duration,
+    hover_template,
+    custom_data_cols,
+    color_discrete_map=None,
+    legend_title_text="",
+):
     """
-    Add one off-screen dummy point per category per frame.
-    This keeps Plotly animation traces stable across frames.
+    Build a stable Plotly animation for categorical colors using one trace
+    per category in every frame.
+
+    This avoids Plotly Express legend/category issues when some categories
+    do not appear in the first animation frames.
     """
-    if df_anim.empty:
-        return df_anim
+    frame_info = (
+        df_anim[["frame_year", "frame_label"]]
+        .drop_duplicates()
+        .sort_values("frame_year")
+        .reset_index(drop=True)
+    )
 
-    x_span = df_anim[x_col].max() - df_anim[x_col].min()
-    y_span = df_anim[y_col].max() - df_anim[y_col].min()
+    if frame_info.empty:
+        return go.Figure()
 
-    dummy_x = df_anim[x_col].min() - max(x_span * 100, 1)
-    dummy_y = df_anim[y_col].min() - max(y_span * 100, 1)
+    if not categories:
+        categories = (
+            df_anim[color_col]
+            .dropna()
+            .astype(str)
+            .drop_duplicates()
+            .tolist()
+        )
 
-    dummy_rows = []
+    first_label = frame_info["frame_label"].iloc[0]
 
-    frame_info = df_anim[["frame_year", "frame_label"]].drop_duplicates()
+    def make_trace(frame_df, category):
+        cat_df = frame_df[frame_df[color_col] == category].copy()
 
+        marker = dict(
+            size=point_size,
+            opacity=marker_opacity,
+            line=dict(width=0),
+        )
+
+        if color_discrete_map is not None and category in color_discrete_map:
+            marker["color"] = color_discrete_map[category]
+
+        existing_custom_cols = [col for col in custom_data_cols if col in cat_df.columns]
+        if existing_custom_cols:
+            customdata = cat_df[existing_custom_cols].to_numpy()
+        else:
+            customdata = None
+
+        return go.Scatter(
+            x=cat_df[x_col].tolist(),
+            y=cat_df[y_col].tolist(),
+            mode="markers",
+            name=str(category),
+            legendgroup=str(category),
+            showlegend=True,
+            marker=marker,
+            customdata=customdata,
+            hovertemplate=hover_template,
+        )
+
+    first_df = df_anim[df_anim["frame_label"] == first_label]
+
+    initial_traces = [
+        make_trace(first_df, category)
+        for category in categories
+    ]
+
+    frames = []
     for _, row in frame_info.iterrows():
-        for cat in categories:
-            dummy_rows.append({
-                x_col: dummy_x,
-                y_col: dummy_y,
-                color_col: cat,
-                "frame_year": row["frame_year"],
-                "frame_label": row["frame_label"],
-                "_row_id": f"dummy_{cat}_{row['frame_year']}",
-                "hover_text_wrapped": "",
-            })
+        label = row["frame_label"]
+        frame_df = df_anim[df_anim["frame_label"] == label]
 
-    df_dummy = pd.DataFrame(dummy_rows)
-    return pd.concat([df_anim, df_dummy], ignore_index=True)
+        frame_traces = [
+            make_trace(frame_df, category)
+            for category in categories
+        ]
+
+        frames.append(
+            go.Frame(
+                name=label,
+                data=frame_traces,
+                layout=go.Layout(
+                    title_text=f"Context window: {label}"
+                )
+            )
+        )
+
+    fig = go.Figure(
+        data=initial_traces,
+        frames=frames
+    )
+
+    fig.update_layout(
+        height=700,
+        dragmode="pan",
+        margin=dict(l=10, r=10, t=40, b=120),
+        xaxis_title=x_col,
+        yaxis_title=y_col,
+        showlegend=True,
+        legend_title_text=legend_title_text,
+        title=f"Context window: {first_label}",
+        xaxis=dict(range=x_range),
+        yaxis=dict(range=y_range),
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                x=0.0,
+                xanchor="left",
+                y=-0.10,
+                yanchor="top",
+                pad=dict(r=10, t=0),
+                showactive=False,
+                buttons=[
+                    dict(
+                        label="Play",
+                        method="animate",
+                        args=[
+                            None,
+                            {
+                                "frame": {"duration": frame_duration, "redraw": True},
+                                "transition": {"duration": 0},
+                                "fromcurrent": True,
+                                "mode": "immediate",
+                            },
+                        ],
+                    ),
+                    dict(
+                        label="Pause",
+                        method="animate",
+                        args=[
+                            [None],
+                            {
+                                "frame": {"duration": 0, "redraw": False},
+                                "transition": {"duration": 0},
+                                "mode": "immediate",
+                            },
+                        ],
+                    ),
+                ],
+            )
+        ],
+        sliders=[
+            dict(
+                active=0,
+                currentvalue={"prefix": "Window: "},
+                x=0.0,
+                xanchor="left",
+                y=-0.18,
+                yanchor="top",
+                len=1.0,
+                pad={"t": 0, "b": 0},
+                steps=[
+                    dict(
+                        label=label,
+                        method="animate",
+                        args=[
+                            [label],
+                            {
+                                "frame": {"duration": 0, "redraw": True},
+                                "transition": {"duration": 0},
+                                "mode": "immediate",
+                            },
+                        ],
+                    )
+                    for label in frame_info["frame_label"].tolist()
+                ],
+            )
+        ],
+    )
+
+    return fig
+
 
 def build_term_blend_animation_figure(
     df_anim,
@@ -150,7 +307,7 @@ def build_term_blend_animation_figure(
     fig.update_layout(
         height=700,
         dragmode="pan",
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=10, r=10, t=40, b=120),
         xaxis_title="x",
         yaxis_title="y",
         showlegend=False,
@@ -162,7 +319,10 @@ def build_term_blend_animation_figure(
                 type="buttons",
                 direction="left",
                 x=0.0,
-                y=1.08,
+                xanchor="left",
+                y=-0.10,
+                yanchor="top",
+                pad=dict(r=10, t=0),
                 showactive=False,
                 buttons=[
                     dict(
@@ -197,7 +357,12 @@ def build_term_blend_animation_figure(
             dict(
                 active=0,
                 currentvalue={"prefix": "Window: "},
-                pad={"t": 40},
+                x=0.0,
+                xanchor="left",
+                y=-0.18,
+                yanchor="top",
+                len=1.0,
+                pad={"t": 0, "b": 0},
                 steps=[
                     dict(
                         label=label,

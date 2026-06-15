@@ -44,10 +44,105 @@ from helpers.helper_terms import (
 
 from helpers.helper_animation import (
     build_time_window_df,
-    add_animation_category_dummies,
+    build_categorical_animation_figure,
     build_term_blend_animation_figure,
 )
 
+def normalize_column_name(name):
+    return re.sub(r"\s+", " ", str(name).strip()).casefold()
+
+EXCLUDED_COLOR_SELECTOR_COLUMNS = {
+    normalize_column_name("Nr advertisement"),
+    normalize_column_name("Link"),
+    normalize_column_name("OCR - Delpher"),
+    normalize_column_name("OCR remediated"),
+    normalize_column_name("Delimiter or manual split"),
+    normalize_column_name("Advertisement nr/code/motto"),
+    normalize_column_name("Date"),
+    normalize_column_name("Oversampling"),
+    normalize_column_name("Year"),
+    normalize_column_name("Position delimiter"),
+    normalize_column_name("Text before delimiter/SUPPLY SIDE"),
+    normalize_column_name("Text as of delimiter/DEMAND SIDE"),
+    normalize_column_name("OCR stripped"),
+    normalize_column_name("SS stripped"),
+    normalize_column_name("DS stripped"),
+    normalize_column_name("OCR extended"),
+    normalize_column_name("SS extended"),
+    normalize_column_name("DS extended"),
+    normalize_column_name("OCR extended profile reduced"),
+    normalize_column_name("SS extended profile reduced"),
+    normalize_column_name("DS extended profile reduced"),
+    normalize_column_name("words OCR extended"),
+    normalize_column_name("single adjectives OCR extended"),
+    normalize_column_name("single nouns OCR extended"),
+    normalize_column_name("phrase nouns OCR extended"),
+    normalize_column_name("single and phrase nouns OCR extended"),
+    normalize_column_name("words SS extended"),
+    normalize_column_name("single adjectives SS extended"),
+    normalize_column_name("single nouns SS extended"),
+    normalize_column_name("phrase nouns SS extended"),
+    normalize_column_name("single and phrase nouns SS extended"),
+    normalize_column_name("words DS extended"),
+    normalize_column_name("single adjectives DS extended"),
+    normalize_column_name("single nouns DS extended"),
+    normalize_column_name("phrase nouns DS extended"),
+    normalize_column_name("single and phrase nouns DS extended"),
+    normalize_column_name("Terms (traditional/modern/hobby)"),
+}
+
+def add_animation_legend_seed_rows(
+    df_anim,
+    color_col,
+    categories,
+    x_col,
+    y_col,
+    x_range,
+    y_range,
+):
+    """
+    Ensure all categories appear in the legend for animated Plotly scatter plots.
+
+    Plotly may only initialize legend entries from categories visible in the
+    initial animation frame. We add one off-canvas row per category to the first
+    frame, while keeping fixed axis ranges so these points never appear onscreen.
+    """
+    if df_anim.empty or not categories or color_col not in df_anim.columns:
+        return df_anim
+
+    if "frame_label" not in df_anim.columns:
+        return df_anim
+
+    first_frame_label = df_anim["frame_label"].iloc[0]
+    first_frame_year = (
+        df_anim["frame_year"].iloc[0]
+        if "frame_year" in df_anim.columns
+        else None
+    )
+
+    x_span = max(x_range[1] - x_range[0], 1.0)
+    y_span = max(y_range[1] - y_range[0], 1.0)
+
+    dummy_x = x_range[0] - x_span
+    dummy_y = y_range[0] - y_span
+
+    dummy_rows = []
+
+    for i, category in enumerate(categories):
+        row = {col: None for col in df_anim.columns}
+        row[color_col] = category
+        row[x_col] = dummy_x - i * 1e-6
+        row[y_col] = dummy_y - i * 1e-6
+        row["_row_id"] = f"__legend_dummy__{i}"
+        row["hover_text_wrapped"] = ""
+
+        row["frame_label"] = first_frame_label
+        if first_frame_year is not None:
+            row["frame_year"] = first_frame_year
+
+        dummy_rows.append(row)
+
+    return pd.concat([df_anim, pd.DataFrame(dummy_rows)], ignore_index=True)
 
 TERM_MATCH_OPTION = "Term match"
 TERM_MATCH_COL = "_term_match"
@@ -374,8 +469,18 @@ if uploaded_file is not None:
         color_col = TERM_MATCH_OPTION
 
     else:
-        color_options = ["None"] + non_xy_columns
-        if TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns:
+        color_candidate_columns = [
+            col for col in non_xy_columns
+            if normalize_column_name(col) not in EXCLUDED_COLOR_SELECTOR_COLUMNS
+            and normalize_column_name(col) != normalize_column_name(YEAR_COL)
+        ]
+
+        color_options = ["None"] + color_candidate_columns
+
+        if (
+            (TERM_SOURCE_COL in all_columns or TERM_SOURCE_COL_ALT in all_columns)
+            and normalize_column_name(TERM_BLEND_OPTION) not in EXCLUDED_COLOR_SELECTOR_COLUMNS
+        ):
             color_options.append(TERM_BLEND_OPTION)
 
         color_col = st.sidebar.selectbox(
@@ -703,62 +808,92 @@ if uploaded_file is not None:
             st.warning("Not enough valid years to build the animation for this window size.")
             st.stop()
 
-        if category_orders is not None and plot_color_col in category_orders:
-            df_anim = add_animation_category_dummies(
-                df_anim,
+        is_categorical_color = (
+            plot_color_col is not None and (
+                color_discrete_map is not None
+                or category_orders is not None
+                or not pd.api.types.is_numeric_dtype(df[plot_color_col])
+            )
+        )
+
+        if is_categorical_color and plot_color_col is not None:
+            if category_orders is not None and plot_color_col in category_orders:
+                categories = category_orders[plot_color_col]
+            else:
+                categories = (
+                    df_anim[plot_color_col]
+                    .dropna()
+                    .tolist()
+                )
+                categories = list(dict.fromkeys(categories))
+
+            fig = build_categorical_animation_figure(
+                df_anim=df_anim,
+                x_col=x_col,
+                y_col=y_col,
                 color_col=plot_color_col,
-                categories=category_orders[plot_color_col]
+                categories=categories,
+                point_size=point_size,
+                marker_opacity=marker_opacity,
+                x_range=x_range,
+                y_range=y_range,
+                frame_duration=frame_duration,
+                hover_template=hover_template,
+                custom_data_cols=custom_data_cols,
+                color_discrete_map=color_discrete_map,
+                legend_title_text=plot_color_col,
             )
 
-        df_anim = df_anim.sort_values(["frame_year", "_row_id"]).reset_index(drop=True)
+        else:
+            df_anim = df_anim.sort_values(["frame_year", "_row_id"]).reset_index(drop=True)
 
-        plot_kwargs = dict(
-            data_frame=df_anim,
-            animation_frame="frame_label",
-            animation_group="_row_id",
-            **base_plot_kwargs
-        )
+            plot_kwargs = dict(
+                data_frame=df_anim,
+                animation_frame="frame_label",
+                animation_group="_row_id",
+                **base_plot_kwargs
+            )
 
-        if plot_color_col is not None:
-            plot_kwargs["color"] = plot_color_col
+            if plot_color_col is not None:
+                plot_kwargs["color"] = plot_color_col
 
-        if color_discrete_map is not None:
-            plot_kwargs["color_discrete_map"] = color_discrete_map
+            if color_discrete_map is not None:
+                plot_kwargs["color_discrete_map"] = color_discrete_map
 
-        if category_orders is not None:
-            plot_kwargs["category_orders"] = category_orders
+            if category_orders is not None:
+                plot_kwargs["category_orders"] = category_orders
 
-        fig = px.scatter(**plot_kwargs)
+            fig = px.scatter(**plot_kwargs)
 
-        fig.update_traces(hovertemplate=hover_template)
+            fig.update_traces(hovertemplate=hover_template)
 
-        fig.update_traces(
-            marker=dict(size=point_size, opacity=marker_opacity),
-            selector=dict(mode="markers")
-        )
+            fig.update_traces(
+                marker=dict(size=point_size, opacity=marker_opacity),
+                selector=dict(mode="markers")
+            )
 
-        fig.update_layout(
-            height=700,
-            dragmode="pan",
-            margin=dict(l=10, r=10, t=40, b=10),
-            xaxis_title=x_axis_title,
-            yaxis_title=y_col,
-            legend_title_text=plot_color_col if plot_color_col is not None else ""
-        )
+            fig.update_layout(
+                height=700,
+                dragmode="pan",
+                margin=dict(l=10, r=10, t=40, b=10),
+                xaxis_title=x_axis_title,
+                yaxis_title=y_col,
+                legend_title_text=plot_color_col if plot_color_col is not None else ""
+            )
 
-        fig.update_xaxes(range=x_range)
-        fig.update_yaxes(range=y_range)
+            fig.update_xaxes(range=x_range)
+            fig.update_yaxes(range=y_range)
 
-        if fig.layout.updatemenus and len(fig.layout.updatemenus) > 0:
-            for button in fig.layout.updatemenus[0].buttons:
-                if len(button.args) > 1 and isinstance(button.args[1], dict):
-                    button.args[1]["frame"] = {"duration": frame_duration, "redraw": True}
-                    button.args[1]["transition"] = {"duration": 0}
-                    button.args[1]["fromcurrent"] = True
-                    button.args[1]["mode"] = "immediate"
+            if fig.layout.updatemenus and len(fig.layout.updatemenus) > 0:
+                for button in fig.layout.updatemenus[0].buttons:
+                    if len(button.args) > 1 and isinstance(button.args[1], dict):
+                        button.args[1]["frame"] = {"duration": frame_duration, "redraw": True}
+                        button.args[1]["transition"] = {"duration": 0}
+                        button.args[1]["fromcurrent"] = True
+                        button.args[1]["mode"] = "immediate"
 
-        if fig.layout.sliders:
-            fig.layout.sliders[0]["currentvalue"]["prefix"] = "Window: "
+            if fig.layout.sliders:
+                fig.layout.sliders[0]["currentvalue"]["prefix"] = "Window: "
 
     else:
         plot_kwargs = dict(
