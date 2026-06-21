@@ -63,11 +63,11 @@ def prepare_religion_column(df, source_col, mode):
         kleuren = sns.color_palette("Set2", 2)
         color_discrete_map = {
             "Religious": rgb_tuple_to_plotly(kleuren[0]),
-            "No preference": rgb_tuple_to_plotly(kleuren[1]),
+            "Not mentioned / No preference": rgb_tuple_to_plotly(kleuren[1]),
         }
 
         category_orders = {
-            merged_col: ["Religious", "No preference"]
+            merged_col: ["Religious", "Not mentioned / No preference"]
         }
 
         return df, merged_col, color_discrete_map, category_orders

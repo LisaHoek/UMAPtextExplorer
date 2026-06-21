@@ -96,8 +96,6 @@ def prepare_location_publisher(df, mode):
         return df, "Location publisher (prov)", color_discrete_map, category_orders
 
     # Show all options: every city gets its own color
-    df[LOCATION_COL] = df[LOCATION_COL].replace({"": "Other"})
-
     # Use only cities that are actually present, but keep preferred order if available
     present_cities = df[LOCATION_COL].dropna().astype(str).unique().tolist()
 

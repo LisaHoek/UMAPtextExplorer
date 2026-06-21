@@ -5,12 +5,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from helpers.helper_utils import YEAR_COL
+from helpers.helper_utils import YEAR_COL, rgb_tuple_to_plotly
 from helpers.helper_hover import wrap_hover_text
-
-from helpers.helper_utils import (
-    rgb_tuple_to_plotly,
-)
 
 from helpers.helper_goal import (
     GOAL_COL,
@@ -226,23 +222,19 @@ def prepare_term_match(df, text_col, contains_terms=None, exact_terms=None):
     contains_terms = contains_terms or []
     exact_terms = exact_terms or []
 
-    text_values = df[text_col].fillna("").astype(str).tolist()
-    text_series = pd.Series(text_values, index=df.index)
+    text_series = df[text_col].fillna("").astype(str)
+    text_values = text_series.tolist()
 
     match_mask = pd.Series(False, index=df.index)
 
     if contains_terms:
-        contains_mask = pd.Series(False, index=df.index)
-
         for term in contains_terms:
-            contains_mask = contains_mask | text_series.str.contains(
+            match_mask = match_mask | text_series.str.contains(
                 term,
                 case=False,
                 na=False,
                 regex=False,
             )
-
-        match_mask = match_mask | contains_mask
 
     if exact_terms:
         exact_tokens = set()
@@ -348,10 +340,14 @@ if uploaded_file is not None:
 
         x_col, y_col = pair_lookup[selected_pair_label]
 
+        _text_col_default = next(
+            (i for i, col in enumerate(non_xy_columns) if col == "OCR extended"),
+            0
+        )
         text_col = st.selectbox(
             "Text column",
             options=non_xy_columns,
-            index=55
+            index=_text_col_default
         )
 
         use_term_match_color = st.checkbox(
@@ -701,13 +697,9 @@ if uploaded_file is not None:
             st.warning("Not enough valid years to build the animation for this window size.")
             st.stop()
 
-        if x_col != "x" and x_col in df_anim.columns:
+        if x_col != "x":
             df_anim = df_anim.copy()
             df_anim["x"] = df_anim[x_col]
-
-        if y_col != "y" and y_col in df_anim.columns:
-            if "x" not in df_anim.columns:
-                df_anim = df_anim.copy()
             df_anim["y"] = df_anim[y_col]
 
         df_anim = df_anim.sort_values(["frame_year", "_row_id"]).reset_index(drop=True)
@@ -718,12 +710,9 @@ if uploaded_file is not None:
             marker_opacity=marker_opacity,
             x_range=x_range,
             y_range=y_range,
-            frame_duration=frame_duration
-        )
-
-        fig.update_layout(
-            xaxis_title=x_col,
-            yaxis_title=y_col,
+            frame_duration=frame_duration,
+            x_col=x_col,
+            y_col=y_col,
         )
 
     elif animate_time:
@@ -794,6 +783,9 @@ if uploaded_file is not None:
             fig = px.scatter(**plot_kwargs)
 
             fig.update_traces(hovertemplate=hover_template)
+            for _frame in fig.frames:
+                for _trace in _frame.data:
+                    _trace.update(hovertemplate=hover_template)
             fig.update_traces(
                 marker=dict(size=point_size, opacity=marker_opacity),
                 selector=dict(mode="markers")
