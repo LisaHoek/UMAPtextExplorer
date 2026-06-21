@@ -69,8 +69,14 @@ def prepare_location_publisher(df, mode):
     """
     df = df.copy()
 
-    df[LOCATION_COL] = df[LOCATION_COL].fillna("").astype(str).str.strip()
-    df[LOCATION_COL] = df[LOCATION_COL].replace({"": "Other"})
+    df[LOCATION_COL] = (
+        df[LOCATION_COL].fillna("").astype(str).str.strip()
+        .replace({
+            "s-Hertogenbosch": "'s-Hertogenbosch",
+            "s-Gravenhage": "'s-Gravenhage",
+            "": "Other",
+        })
+    )
 
     if mode == "Show merged options":
         df["Location publisher (prov)"] = df[LOCATION_COL].map(mapping_locations)

@@ -32,6 +32,7 @@ def prepare_goal_of_advertisement(df, mode):
 
     # Normalize missing values for this column
     df[GOAL_COL] = df[GOAL_COL].fillna("Not mentioned").astype(str).str.strip()
+    df[GOAL_COL] = df[GOAL_COL].replace({"LAT Relationship": "LAT relationship"})
 
     if mode == "Show merged options":
         df["Goal of advertisement (alt)"] = df[GOAL_COL].map(marriage_or_not)

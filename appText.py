@@ -45,6 +45,25 @@ from helpers.helper_animation import (
     build_term_blend_animation_figure,
 )
 
+from helpers.helper_categories import (
+    POSITIVE_ONLY_COLS,
+    POSITIVE_NEGATIVE_COLS,
+    SEX_COLS,
+    CIRCULATION_AREA_COL,
+    STRUCTURE_COL,
+    AREA_NUMBER_COL,
+    CIVIL_STATUS_COL,
+    PERIOD_COL,
+    prepare_positive_only,
+    prepare_positive_negative,
+    prepare_sex,
+    prepare_circulation_area,
+    prepare_structure,
+    prepare_area_number,
+    prepare_civil_status,
+    prepare_period,
+)
+
 
 TERM_MATCH_OPTION = "Term match"
 TERM_MATCH_COL = "_term_match"
@@ -92,6 +111,10 @@ EXCLUDED_COLOR_SELECTOR_COLUMNS = {
     normalize_column_name("phrase nouns DS extended"),
     normalize_column_name("single and phrase nouns DS extended"),
     normalize_column_name("Terms (traditional/modern/hobby)"),
+    normalize_column_name("Newspaper title"),
+    normalize_column_name("Publisher"),
+    normalize_column_name("Occupation (SS)"),
+    normalize_column_name("Occupation (DS)"),
 }
 
 
@@ -190,6 +213,7 @@ def tokenize_text(value):
 @st.cache_data(show_spinner=False)
 def load_and_prepare_csv(file_bytes):
     df = pd.read_csv(BytesIO(file_bytes))
+    df.columns = df.columns.str.strip()
 
     coordinate_pairs = get_coordinate_pairs(df)
     coordinate_columns = sorted({col for pair in coordinate_pairs for col in pair})
@@ -504,6 +528,30 @@ if uploaded_file is not None:
         df, plot_color_col, color_discrete_map, category_orders = (
             prepare_religion_column(df, color_col, religion_color_mode)
         )
+
+    elif color_col in POSITIVE_ONLY_COLS:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_positive_only(df, color_col)
+
+    elif color_col in POSITIVE_NEGATIVE_COLS:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_positive_negative(df, color_col)
+
+    elif color_col in SEX_COLS:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_sex(df, color_col)
+
+    elif color_col == CIRCULATION_AREA_COL:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_circulation_area(df, color_col)
+
+    elif color_col == STRUCTURE_COL:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_structure(df, color_col)
+
+    elif color_col == AREA_NUMBER_COL:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_area_number(df, color_col)
+
+    elif color_col == CIVIL_STATUS_COL:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_civil_status(df, color_col)
+
+    elif color_col == PERIOD_COL:
+        df, plot_color_col, color_discrete_map, category_orders = prepare_period(df, color_col)
 
     elif color_col == TERM_BLEND_OPTION:
         if TERM_SOURCE_COL not in df.columns:
