@@ -739,7 +739,13 @@ if uploaded_file is not None:
         )
 
     if animate_time and use_term_blend:
-        df_anim = cached_build_time_window_df(df, year_col=YEAR_COL, window_size=window_size)
+        _term_blend_anim_cols = [
+            c for c in [
+                YEAR_COL, x_col, y_col, "_row_id", "hover_text_wrapped",
+                "term_rgb_color", "modern_count_unique", "hobby_count_unique", "trad_count_unique",
+            ] if c in df.columns
+        ]
+        df_anim = cached_build_time_window_df(df[_term_blend_anim_cols], year_col=YEAR_COL, window_size=window_size)
 
         if df_anim.empty:
             st.warning("Not enough valid years to build the animation for this window size.")
@@ -772,7 +778,14 @@ if uploaded_file is not None:
                     ordered=True
                 )
 
-        df_anim = cached_build_time_window_df(df, year_col=YEAR_COL, window_size=window_size)
+        _cat_anim_cols = [YEAR_COL, x_col, y_col, "_row_id", "hover_text_wrapped"]
+        if plot_color_col is not None:
+            _cat_anim_cols.append(plot_color_col)
+        for _c in custom_data_cols:
+            if _c not in _cat_anim_cols:
+                _cat_anim_cols.append(_c)
+        _cat_anim_cols = [c for c in dict.fromkeys(_cat_anim_cols) if c in df.columns]
+        df_anim = cached_build_time_window_df(df[_cat_anim_cols], year_col=YEAR_COL, window_size=window_size)
 
         if df_anim.empty:
             st.warning("Not enough valid years to build the animation for this window size.")
