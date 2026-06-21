@@ -921,7 +921,7 @@ if uploaded_file is not None:
             st.caption("Use the Play button below the chart to animate the moving year window.")
             event = st.plotly_chart(
                 fig,
-                use_container_width=True,
+                width='stretch',
                 key=f"scatter_plot_variant_animated_{x_col}_{y_col}",
                 config={
                     "scrollZoom": True,
@@ -931,7 +931,7 @@ if uploaded_file is not None:
         else:
             event = st.plotly_chart(
                 fig,
-                use_container_width=True,
+                width='stretch',
                 key=f"scatter_plot_variant_{x_col}_{y_col}",
                 on_select="rerun",
                 selection_mode=("box", "lasso"),
@@ -992,13 +992,13 @@ if uploaded_file is not None:
 
     st.subheader("Data Preview (selected)")
     if not display_selected_df.empty:
-        st.dataframe(display_selected_df, use_container_width=True)
+        st.dataframe(display_selected_df, width='stretch')
     else:
         st.info("No points selected.")
 
     with st.expander("Data Preview (plot)", expanded=False):
         preview_limit = min(1000, len(df))
-        st.dataframe(df.head(preview_limit), use_container_width=True)
+        st.dataframe(df.head(preview_limit), width='stretch')
         if len(df) > preview_limit:
             st.caption(f"Showing first {preview_limit:,} of {len(df):,} rows.")
 
